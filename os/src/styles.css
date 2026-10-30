@@ -104,3 +104,9 @@ body{color:var(--text)}
 .settings-layout section input[type=range]{accent-color:var(--accent)}
 .settings-layout section select{min-width:125px}
 @media(max-width:600px){.launcher-app-wrap .app-tile{min-height:76px}.pin-app,.shortcut-app{font-size:12px}.dock-apps button{min-width:36px}}
+
+#launcher-apps{display:block}
+.launcher-section{margin-top:8px}
+.launcher-section .app-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.launcher-section .launcher-label{margin:12px 0 8px}
+.launcher-section .muted{font-size:12px;padding:8px}
