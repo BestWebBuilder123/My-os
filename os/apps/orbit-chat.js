@@ -3,7 +3,7 @@
   let loading;
   function getClient(){
     if(window.supabase&&window.supabase.createClient)return Promise.resolve(window.__orbitClient||(window.__orbitClient=window.supabase.createClient(URL,KEY)));
-    if(!loading)loading=new Promise((resolve,reject)=>{const s=document.createElement("script");s.src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2";s.onload=()=>resolve(window.__orbitClient||(window.__orbitClient=window.supabase.createClient(URL,KEY)));s.onerror=()=>reject(new Error("Could not load Supabase client."));document.head.appendChild(s);});
+    if(!loading)loading=new Promise((resolve,reject)=>{const s=document.createElement("script");s.src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.118.0/dist/umd/supabase.min.js";s.onload=()=>resolve(window.__orbitClient||(window.__orbitClient=window.supabase.createClient(URL,KEY)));s.onerror=()=>reject(new Error("Could not load Supabase client."));document.head.appendChild(s);});
     return loading;
   }
   const esc=v=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
