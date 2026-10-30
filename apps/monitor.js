@@ -1,0 +1,3 @@
+// System Monitor app module.
+export function render(api) { return `<div class="stat-grid"><div class="stat"><span class="muted">Memory estimate</span><strong id="mem-stat">—</strong><small class="muted">Browser storage</small></div><div class="stat"><span class="muted">Open windows</span><strong id="win-stat">0</strong></div><div class="stat"><span class="muted">Stored files</span><strong id="file-stat">0</strong></div><div class="stat"><span class="muted">Uptime</span><strong id="uptime-stat">0m</strong></div></div><p class="muted">Browser sandbox metrics are estimates.</p>`; }
+export function mount(root, api) { api.mountLegacy('monitor', root); }
