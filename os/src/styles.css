@@ -67,3 +67,40 @@
 .fm-content{min-width:0;overflow:auto}.fm-heading,.fm-row{display:grid;grid-template-columns:minmax(110px,1.6fr) minmax(65px,.7fr) minmax(75px,.8fr) auto;gap:8px;align-items:center;padding:9px 7px;border-bottom:1px solid #ffffff12;font-size:11px}.fm-heading{color:#9eacc4;font-weight:700}.fm-row{color:#d7e0f0}.fm-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.fm-actions{display:flex;gap:2px}.fm-actions button{font-size:11px;padding:5px 7px;background:#ffffff0d}.fm-empty{padding:28px 10px;text-align:center;color:#9eacc4;font-size:12px}
 .light-theme .vscode{color:#26344c;background:#f4f6fb}.light-theme .vs-main,.light-theme .vs-lines,.light-theme #vs-code{background:#f4f6fb;color:#26344c}.light-theme .vs-explorer{background:#e9edf5}.light-theme .vs-activity{background:#dfe5ef}.light-theme .vs-tab{background:#e5eaf3}.light-theme .vs-file{color:#34425a}.light-theme .vs-status{background:#6279b5;color:white}
 @media(max-width:650px){.vscode{grid-template-columns:34px 112px minmax(0,1fr)}.vs-toolbar{gap:2px}.vs-toolbar button{padding:5px}.fm-layout{grid-template-columns:92px minmax(0,1fr);gap:6px}.fm-heading,.fm-row{grid-template-columns:minmax(80px,1.3fr) minmax(50px,.7fr) auto}.fm-heading span:nth-child(3),.fm-row>span:nth-child(3){display:none}.fm-actions button{padding:4px}}
+
+
+/* App launcher, running-only taskbar, window stacking and customizable themes */
+:root{--bg1:#10182f;--bg2:#263b68;--surface:#192037;--text:#f6f7ff}
+body{color:var(--text)}
+.desktop{background:radial-gradient(ellipse at 75% 20%,color-mix(in srgb,var(--bg2) 80%,transparent),transparent 40%),linear-gradient(135deg,var(--bg1),var(--bg2) 58%,var(--bg1))}
+.window{color:var(--text)}
+.windows{z-index:9}
+.dock{z-index:8}
+.window.maximized{inset:10px!important;width:auto!important;height:auto!important}
+.dock-apps button{position:relative;min-width:42px}
+.dock-apps button.running{background:#ffffff12}
+.dock-apps button::after{content:"";position:absolute;left:11px;right:11px;bottom:2px;height:3px;border-radius:4px;background:transparent;transition:background .18s ease,transform .18s ease}
+.dock-apps button.unfocused::after{background:#ffffff78}
+.dock-apps button.focused::after{background:var(--accent);height:4px}
+.launcher{max-height:min(76vh,650px);overflow:auto}
+.app-grid{align-items:stretch}
+.launcher-app-wrap{position:relative;min-width:0;display:flex;align-items:center;justify-content:center;border-radius:14px;background:#ffffff08}
+.launcher-app-wrap .app-tile{width:100%;min-height:84px;padding:12px 6px 18px}
+.launcher-app-wrap .app-tile i{font-size:26px}
+.pin-app,.shortcut-app{position:absolute;bottom:2px;font-size:13px;padding:3px 6px;color:#cbd5eb;opacity:.72}
+.pin-app{right:25px}.shortcut-app{right:2px}
+.pin-app:hover,.shortcut-app:hover{opacity:1;color:var(--accent);background:#ffffff18}
+.launcher-app-wrap[hidden]{display:none}
+.launcher-label{display:flex;align-items:center;justify-content:space-between}
+.desktop-icon{min-width:72px}
+.desktop-icon span{display:grid;place-items:center;width:42px;height:42px;border-radius:14px;background:#ffffff16;backdrop-filter:blur(12px)}
+.desktop-icon small{max-width:84px;text-align:center;text-shadow:0 1px 4px #0009}
+.custom-theme .desktop{background:radial-gradient(ellipse at 75% 20%,color-mix(in srgb,var(--bg2) 70%,transparent),transparent 42%),linear-gradient(135deg,var(--bg1),var(--bg2) 58%,var(--bg1))}
+.custom-theme .window,.custom-theme .glass{background:var(--glass);color:var(--text)}
+.custom-theme .window-content,.custom-theme .launcher,.custom-theme .control-center,.custom-theme .notifications{color:var(--text)}
+.custom-theme input,.custom-theme textarea,.custom-theme select{color:var(--text)}
+.custom-theme .window-header,.custom-theme .fm-row,.custom-theme .vs-explorer{color:var(--text)}
+.settings-layout section input[type=color]{width:52px;height:34px;padding:3px;border-radius:9px;cursor:pointer}
+.settings-layout section input[type=range]{accent-color:var(--accent)}
+.settings-layout section select{min-width:125px}
+@media(max-width:600px){.launcher-app-wrap .app-tile{min-height:76px}.pin-app,.shortcut-app{font-size:12px}.dock-apps button{min-width:36px}}
