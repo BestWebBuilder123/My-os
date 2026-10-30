@@ -1,3 +1,4 @@
+const $vusHost=document.querySelector(".vus-chat-host");
 (function () {
 "use strict";
 /* ══════════════════════════════════════════════════════════
@@ -1704,7 +1705,7 @@ try { Object.assign(chatPrefs, JSON.parse(localStorage.getItem(CHAT_PREFS_KEY) |
 function saveChatPrefs() { try { localStorage.setItem(CHAT_PREFS_KEY, JSON.stringify(chatPrefs)); } catch (e) {} }
 let autoScroll = chatPrefs.autoScroll !== false;
 let stickToBottom = true;      // true while the view is pinned to the newest message
-document.body.classList.toggle("hide-joinleave", chatPrefs.showJoinLeave === false);
+$vusHost.classList.toggle("hide-joinleave", chatPrefs.showJoinLeave === false);
 // Looks: text size, bubble size and bold text. Client-side only, remembered on this device.
 function applyAppearance() {
   const b = document.body;
@@ -1759,7 +1760,7 @@ function restorePrefsState(str) {
   Object.assign(chatPrefs, saved);
   saveChatPrefs();
   applyAppearance();
-  document.body.classList.toggle("hide-joinleave", chatPrefs.showJoinLeave === false);
+  $vusHost.classList.toggle("hide-joinleave", chatPrefs.showJoinLeave === false);
   autoScroll = chatPrefs.autoScroll !== false;
   if (typeof setAutoScrollUI === "function") setAutoScrollUI();
   if (typeof scheduleVerifyRefresh === "function") scheduleVerifyRefresh();
@@ -4681,7 +4682,7 @@ function renderChatSettings(container) {
   toggle("Show join / leave", "\u201cX joined\u201d and \u201cX left\u201d lines", () => chatPrefs.showJoinLeave !== false, v => {
     chatPrefs.showJoinLeave = v;
     saveChatPrefs();
-    document.body.classList.toggle("hide-joinleave", !v);
+    $vusHost.classList.toggle("hide-joinleave", !v);
     if (autoScroll && stickToBottom) scrollToBottom();
   });
 
