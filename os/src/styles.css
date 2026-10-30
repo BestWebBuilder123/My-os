@@ -137,3 +137,14 @@ input,textarea,[contenteditable=true],#vs-code{user-select:text;-webkit-user-sel
 .animations-subtle .launcher:not(.hidden),.animations-subtle .control-center:not(.hidden),.animations-subtle .notifications:not(.hidden){animation:none}
 .animations-off *, .animations-off *::before, .animations-off *::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}
 @keyframes subtle-window-in{from{opacity:0}to{opacity:1}}
+
+
+/* Pointer-captured window controls: keep dragging/resizing alive outside the title bar */
+.window-header{touch-action:none;user-select:none;-webkit-user-select:none}
+.window-header b,.window-header .traffic{pointer-events:none}
+.window-header button{pointer-events:auto}
+.window.resizing{width:var(--window-width)!important;height:var(--window-height)!important;max-width:none;max-height:none;transition:none!important;animation:none!important}
+.resize-handle{width:26px;height:26px;right:0;bottom:0;z-index:30;pointer-events:auto;touch-action:none;cursor:nwse-resize;background:linear-gradient(135deg,transparent 0 38%,#ffffff66 39% 45%,transparent 46% 57%,#ffffff88 58% 64%,transparent 65% 74%,#ffffffaa 75% 81%,transparent 82%)}
+.resize-handle:hover{background-color:#ffffff20;filter:brightness(1.35)}
+.window.resizing .window-content{pointer-events:none}
+@media(max-width:600px){.window{min-width:260px;min-height:200px}.window.resizing{min-width:260px;min-height:200px}}
