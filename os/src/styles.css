@@ -143,7 +143,7 @@ input,textarea,[contenteditable=true],#vs-code{user-select:text;-webkit-user-sel
 .window-header{touch-action:none;user-select:none;-webkit-user-select:none}
 .window-header b,.window-header .traffic{pointer-events:none}
 .window-header button{pointer-events:auto}
-.window.resizing{width:var(--window-width)!important;height:var(--window-height)!important;max-width:none;max-height:none;transition:none!important;animation:none!important}
+.window.resizing{max-width:none!important;max-height:none!important;transition:none!important;animation:none!important;transform:none!important}
 .resize-handle{width:26px;height:26px;right:0;bottom:0;z-index:30;pointer-events:auto;touch-action:none;cursor:nwse-resize;background:linear-gradient(135deg,transparent 0 38%,#ffffff66 39% 45%,transparent 46% 57%,#ffffff88 58% 64%,transparent 65% 74%,#ffffffaa 75% 81%,transparent 82%)}
 .resize-handle:hover{background-color:#ffffff20;filter:brightness(1.35)}
 .window.resizing .window-content{pointer-events:none}
@@ -160,3 +160,8 @@ input,textarea,[contenteditable=true],#vs-code{user-select:text;-webkit-user-sel
  .window:not(.maximized){left:8px;top:8px;width:calc(100vw - 16px);height:calc(100dvh - 80px);min-width:260px;min-height:200px}
  .window.resizing{min-width:260px;min-height:200px}
 }
+
+/* Live resize must use the pixel dimensions written by the pointer handler */
+.window.resizing{width:unset; height:unset; min-width:260px; min-height:200px; overflow:hidden}
+.window.resizing .window-content{overflow:hidden}
+.window.resizing .resize-handle{pointer-events:none}
