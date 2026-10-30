@@ -2597,13 +2597,13 @@ $searchBtn.addEventListener("click", async () => {
 $searchInput.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); $searchBtn.click(); } });
 
 function showLoggedInState(session) {
-  document.body.classList.add("app-mode");
+  document.querySelector(".vus-chat-host").classList.add("app-mode");
   $listPaneYouName.textContent = session.username;
   $listPaneYouId.textContent = "#" + session.id;
   refreshOwnRailAvatar();
 }
 function showAuthFlow() {
-  document.body.classList.remove("app-mode");
+  document.querySelector(".vus-chat-host").classList.remove("app-mode");
   $appShell.classList.remove("nav-open", "thread-open");
   $authFlow.style.display = "block";
 }
