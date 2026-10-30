@@ -110,3 +110,30 @@ body{color:var(--text)}
 .launcher-section .app-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
 .launcher-section .launcher-label{margin:12px 0 8px}
 .launcher-section .muted{font-size:12px;padding:8px}
+
+
+/* Final desktop layering, native window resizing and clean text rendering */
+#desktop-icons{z-index:2}
+.windows{z-index:10;pointer-events:none}
+.window{pointer-events:auto;z-index:1}
+.dock{z-index:50}
+.launcher,.control-center,.notifications{z-index:60}
+.toast{z-index:80}
+.window.maximized{z-index:2}
+.resize-handle{position:absolute;right:2px;bottom:2px;width:18px;height:18px;z-index:5;cursor:nwse-resize;touch-action:none;border-radius:0 0 12px 0;background:linear-gradient(135deg,transparent 0 42%,#ffffff55 43% 49%,transparent 50% 62%,#ffffff55 63% 69%,transparent 70%)}
+.resize-handle:hover{background-color:#ffffff12}
+.window{min-width:320px;min-height:220px;max-width:calc(100vw - 12px);max-height:calc(100dvh - 12px)}
+body{user-select:none;-webkit-user-select:none}
+input,textarea,[contenteditable=true],#vs-code{user-select:text;-webkit-user-select:text}
+::selection{background:color-mix(in srgb,var(--accent) 35%,transparent);color:inherit}
+.settings-hint{font-size:12px;line-height:1.5;color:color-mix(in srgb,var(--text) 70%,transparent);margin:0 4px}
+.window{animation-duration:calc(280ms * var(--motion-scale,1))}
+.window.closing{animation-duration:calc(170ms * var(--motion-scale,1))}
+.window.minimized{animation-duration:calc(150ms * var(--motion-scale,1))}
+.window-header button,.dock button,.app-tile,.desktop-icon,.launcher,.control-center,.notifications{transition-duration:calc(160ms * var(--motion-scale,1))}
+.launcher:not(.hidden),.control-center:not(.hidden),.notifications:not(.hidden){animation-duration:calc(220ms * var(--motion-scale,1))}
+.animations-subtle .window{animation-name:subtle-window-in;animation-duration:calc(160ms * var(--motion-scale,1))}
+.animations-subtle .window-header button:hover,.animations-subtle .dock button:hover,.animations-subtle .app-tile:hover,.animations-subtle .desktop-icon:hover{transform:none}
+.animations-subtle .launcher:not(.hidden),.animations-subtle .control-center:not(.hidden),.animations-subtle .notifications:not(.hidden){animation:none}
+.animations-off *, .animations-off *::before, .animations-off *::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}
+@keyframes subtle-window-in{from{opacity:0}to{opacity:1}}
