@@ -6,50 +6,108 @@
 <meta name="theme-color" content="#101426">
 <title>My OS Launcher</title>
 <style>
-*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;color:#f4f6ff;background:radial-gradient(ellipse at 18% 12%,#35406d 0,transparent 38%),radial-gradient(ellipse at 85% 90%,#263d59 0,transparent 42%),#0b1020;font:15px system-ui,sans-serif}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;color:#f4f6ff;background:radial-gradient(ellipse at 18% 12%,#35406d 0,transparent 38%),radial-gradient(ellipse at 85% 90%,#263d59 0,transparent 42%),#0b1020;font:15px system-ui,sans-serif}
 main{width:min(480px,100%);padding:30px;border:1px solid #ffffff24;border-radius:26px;background:#ffffff0d;backdrop-filter:blur(24px);box-shadow:0 28px 90px #0008}
 .logo{width:54px;height:54px;display:grid;place-items:center;border-radius:18px;background:linear-gradient(145deg,#a5b4fc,#6478e8);color:#101426;font-size:29px;font-weight:800}
-h1{font-size:27px;margin:20px 0 8px}p{color:#aab4d0;line-height:1.55;margin:0 0 20px}
-button{width:100%;border:0;border-radius:14px;padding:15px;background:linear-gradient(135deg,#a5b4fc,#7286f0);color:#11172b;font-weight:800;font-size:15px;cursor:pointer}button:disabled{opacity:.55;cursor:wait}
-#status{margin-top:15px;min-height:20px;font-size:13px;color:#b7c2df}.hint{font-size:12px;color:#7f8aa9;margin-top:16px}
+h1{font-size:27px;margin:20px 0 8px}
+p{color:#aab4d0;line-height:1.55;margin:0 0 20px}
+button{width:100%;border:0;border-radius:14px;padding:15px;background:linear-gradient(135deg,#a5b4fc,#7286f0);color:#11172b;font-weight:800;font-size:15px;cursor:pointer}
+button:disabled{opacity:.55;cursor:wait}
+#status{margin-top:15px;min-height:20px;font-size:13px;color:#b7c2df}
+.hint{font-size:12px;color:#7f8aa9;margin-top:16px}
 </style>
 </head>
 <body>
 <main>
 <div class="logo">◈</div>
 <h1>My OS Launcher</h1>
-<p>Fetches the OS directly from the <b>os/</b> folder in GitHub and opens it in a clean <code>about:blank</code> tab.</p>
+<p>Automatically checks GitHub for the newest My OS version every time you launch.</p>
 <button id="launch">Launch My OS ↗</button>
-<div id="status" role="status">Ready · GitHub main branch</div>
-<div class="hint">Allow pop-ups for this launcher. The new tab loads the OS files directly from GitHub.</div>
+<div id="status" role="status">Ready · Automatic updates enabled</div>
+<div class="hint">Allow pop-ups. An internet connection is required to check for updates and load My OS.</div>
 </main>
 <script>
 (() => {
-  const RAW = "https://cdn.jsdelivr.net/gh/weirdsimplegames/My-os@ca28443058eb57a774e38cae4ec681bec504e8ee/os/";
+  const API = "https://api.github.com/repos/weirdsimplegames/My-os/commits/main";
+  const RAW = "https://raw.githubusercontent.com/weirdsimplegames/My-os/";
   const button = document.getElementById("launch");
   const status = document.getElementById("status");
+
+  function showError(tab, message) {
+    if (tab && !tab.closed) {
+      tab.document.open();
+      tab.document.write(
+        '<!doctype html><title>My OS could not load</title>' +
+        '<body style="font:16px system-ui;background:#101426;color:white;padding:32px">' +
+        '<h2>Could not load My OS</h2><p>' +
+        String(message).replace(/[&<>"]/g, c => ({
+          "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"
+        }[c])) +
+        '</p><p>Check your internet connection and try again.</p></body>'
+      );
+      tab.document.close();
+    }
+  }
+
   button.addEventListener("click", async () => {
+    // Open synchronously from the click so popup blockers allow it.
     const tab = window.open("about:blank", "_blank");
-    if (!tab) { status.textContent = "Pop-up blocked. Allow pop-ups, then try again."; return; }
+    if (!tab) {
+      status.textContent = "Popup blocked. Allow pop-ups, then try again.";
+      return;
+    }
+
     button.disabled = true;
-    status.textContent = "Fetching os/index.html from GitHub…";
+    status.textContent = "Checking GitHub for the latest version…";
+
     try {
-      const response = await fetch(RAW + "index.html?cache=" + Date.now(), {cache:"no-store"});
-      if (!response.ok) throw new Error("GitHub returned HTTP " + response.status);
-      let html = await response.text();
-      const base = '<base href="' + RAW + '">';
-      if (/<head[^>]*>/i.test(html)) html = html.replace(/<head[^>]*>/i, match => match + base);
-      else html = base + html;
+      const commitResponse = await fetch(API + "?_=" + Date.now(), {
+        cache: "no-store",
+        headers: { "Accept": "application/vnd.github+json" }
+      });
+      if (!commitResponse.ok) {
+        throw new Error("Could not check GitHub updates (HTTP " + commitResponse.status + ").");
+      }
+
+      const commitData = await commitResponse.json();
+      const version = commitData.sha;
+      if (!version) throw new Error("GitHub did not return a version number.");
+
+      status.textContent = "Latest version found. Downloading My OS…";
+
+      const indexUrl = RAW + version + "/os/index.html";
+      const indexResponse = await fetch(indexUrl + "?_=" + Date.now(), {
+        cache: "no-store"
+      });
+      if (!indexResponse.ok) {
+        throw new Error("Could not download the OS files (HTTP " + indexResponse.status + ").");
+      }
+
+      let html = await indexResponse.text();
+
+      // Pin every relative CSS, script, and app-module URL to this exact
+      // commit so all files belong to the same updated release.
+      const assetBase =
+        "https://cdn.jsdelivr.net/gh/weirdsimplegames/My-os@" + version + "/os/";
+      const baseTag = '<base href="' + assetBase + '">';
+      if (/<head[^>]*>/i.test(html)) {
+        html = html.replace(/<head[^>]*>/i, head => head + baseTag);
+      } else {
+        html = baseTag + html;
+      }
+
       tab.document.open();
       tab.document.write(html);
       tab.document.close();
-      status.textContent = "OS loaded from GitHub. You can use the new tab now.";
+
+      status.textContent = "My OS is up to date · " + version.slice(0, 7);
     } catch (error) {
-      tab.document.open();
-      tab.document.write('<!doctype html><title>My OS could not load</title><body style="font:16px system-ui;background:#101426;color:white;padding:32px"><h2>Could not load My OS</h2><p>' + String(error.message).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])) + '</p><p>Check your connection and confirm that os/index.html and the os/src and os/apps folders exist.</p></body>');
-      tab.document.close();
-      status.textContent = "Launch failed: " + error.message;
-    } finally { button.disabled = false; }
+      showError(tab, error.message);
+      status.textContent = "Update failed: " + error.message;
+    } finally {
+      button.disabled = false;
+    }
   });
 })();
 </script>
