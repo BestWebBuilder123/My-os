@@ -1,0 +1,3835 @@
+(function () {
+"use strict";
+/* ══════════════════════════════════════════════════════════
+   DM / ACCOUNTS DATABASE  (Firebase project: vus-dm)
+   Holds accounts, friends, DMs and group chats. The public chat room lives
+   in a SEPARATE database (vus-chat) and is handled by chat.js. Both share
+   the same login: the account stored here.
+   ══════════════════════════════════════════════════════════ */
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyC_cxqIYzFcQ8nVTo679JuVEgIZDAyrPEQ",
+  authDomain: "vus-dm.firebaseapp.com",
+  databaseURL: "https://vus-dm-default-rtdb.firebaseio.com",
+  projectId: "vus-dm",
+  storageBucket: "vus-dm.firebasestorage.app",
+  messagingSenderId: "768508136182",
+  appId: "1:768508136182:web:abd44cb531dd2c43dd7ad7",
+  measurementId: "G-H8CMTKZWJN"
+};
+const FIREBASE_APP_NAME = "vusDm";
+
+const USERNAME_MAX_LENGTH = 24;
+const USERNAME_MIN_LENGTH = 3;
+const ID_LENGTH = 6;
+const ID_MIN = 100000;
+const ID_MAX = 999999;
+const SESSION_STORAGE_KEY = "dmAppSession";
+const GC_MAX_MEMBERS = 20;
+const SEND_DELAY_MS = 2000;
+const TYPING_TIMEOUT_MS = 4000;
+
+let db = null;
+let usersRef = null, usernameIndexRef = null, idIndexRef = null;
+let presenceRef = null, connectedRef = null, myPresenceRef = null;
+let dmsRef = null, groupChatsRef = null;
+
+/* ── Account ownership (anonymous sign-in claim) ──
+   Each browser signs in anonymously to the vus-dm project; the first browser to
+   log into an account stores its uid at users/<key>/ownerUid. The database rules
+   only let that uid change the password / username. */
+let authPromise = null, authErrorCode = "", claimPromise = null, ownedElsewhere = false, ownerClaimed = false;
+function ensureAuth() {
+  if (authPromise) return authPromise;
+  authPromise = (async () => {
+    try {
+      const a = firebase.apps.find(x => x.name === FIREBASE_APP_NAME).auth();
+      if (a.currentUser) return a.currentUser.uid;
+      const cred = await a.signInAnonymously();
+      return cred.user.uid;
+    } catch (e) {
+      authErrorCode = String((e && e.code) || (e && e.message) || "auth");
+      authPromise = null;
+      return null;
+    }
+  })();
+  return authPromise;
+}
+function claimOwnership(accountKey) {
+  ownedElsewhere = false; ownerClaimed = false;
+  claimPromise = (async () => {
+    const uid = await ensureAuth();
+    if (!uid) return;
+    try {
+      const ref = usersRef.child(accountKey).child("ownerUid");
+      const cur = (await ref.get()).val();
+      // Logging in with the right password re-claims the account for THIS browser/site,
+      // so people who move between sites keep full control of their account.
+      if (cur !== uid) await ref.set(uid);
+      ownerClaimed = true;
+    } catch (e) { /* rules not updated yet: stays unclaimed */ }
+  })();
+  return claimPromise;
+}
+async function accountWriteBlock() {
+  if (claimPromise) await claimPromise;
+  if (ownedElsewhere) return "This account is locked to the browser that first signed in to it. Ask the Owner to reset it, then log in again.";
+  if (!ownerClaimed) {
+    if (/operation-not-allowed|admin-restricted/.test(authErrorCode)) return "Anonymous sign-in is switched off in the vus-dm Firebase console (Authentication → Sign-in method → Anonymous).";
+    if (authErrorCode) return "Couldn't verify this browser with the database (" + authErrorCode + ").";
+  }
+  return null;
+}
+
+function initFirebase() {
+  const app = firebase.apps.find(a => a.name === FIREBASE_APP_NAME) || firebase.initializeApp(FIREBASE_CONFIG, FIREBASE_APP_NAME);
+  db = app.database();
+  window.VUS_DM_DB = db; // chat.js reuses this connection for account lookups
+  usersRef = db.ref("users");
+  usernameIndexRef = db.ref("usernameIndex");
+  idIndexRef = db.ref("idIndex");
+  presenceRef = db.ref("presence");
+  connectedRef = db.ref(".info/connected");
+  db.ref(".info/serverTimeOffset").on("value", snap => { serverOffset = Number(snap.val()) || 0; });
+  dmsRef = db.ref("dms");
+  groupChatsRef = db.ref("groupChats");
+}
+
+/* ── Password hashing: salted PBKDF2-SHA-256 (Web Crypto) ──
+   Stored in the existing `password` field as "pbkdf2$<iterations>$<salt>$<hash>"
+   (base64, 83 chars, fits the 100-char rule). Old plain-text passwords still
+   log in once and are upgraded to a hash automatically. */
+const PW_PREFIX = "pbkdf2$";
+const PW_ITERATIONS = 200000;
+
+function bytesToB64(buf) { return btoa(String.fromCharCode(...new Uint8Array(buf))); }
+function b64ToBytes(b64) { return Uint8Array.from(atob(b64), c => c.charCodeAt(0)); }
+
+async function pbkdf2Bits(password, saltBytes, iterations) {
+  if (!window.crypto || !crypto.subtle) throw new Error("Secure password hashing needs https — open the site over https.");
+  const keyMat = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveBits"]);
+  return crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt: saltBytes, iterations }, keyMat, 256);
+}
+
+async function hashPassword(password) {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const bits = await pbkdf2Bits(password, salt, PW_ITERATIONS);
+  return PW_PREFIX + PW_ITERATIONS + "$" + bytesToB64(salt) + "$" + bytesToB64(bits);
+}
+
+function isHashedPassword(stored) {
+  return typeof stored === "string" && stored.startsWith(PW_PREFIX) && stored.split("$").length === 4;
+}
+
+async function verifyPassword(password, stored) {
+  if (!isHashedPassword(stored)) return stored === password; // legacy plain text
+  const [, iter, saltB64, hashB64] = stored.split("$");
+  const bits = await pbkdf2Bits(password, b64ToBytes(saltB64), parseInt(iter, 10));
+  return bytesToB64(bits) === hashB64;
+}
+
+function normalizeUsernameKey(username) { return username.trim().toLowerCase(); }
+function isValidUsernameFormat(username) {
+  return /^[a-zA-Z0-9_]+$/.test(username) && username.length >= USERNAME_MIN_LENGTH && username.length <= USERNAME_MAX_LENGTH;
+}
+function isLikelyId(identifier) { return /^[0-9]{6}$/.test(identifier.trim()); }
+function randomSixDigitId() { return String(Math.floor(Math.random() * (ID_MAX - ID_MIN + 1)) + ID_MIN); }
+
+async function generateUniqueId() {
+  for (let attempt = 0; attempt < 15; attempt++) {
+    const candidate = randomSixDigitId();
+    const snap = await idIndexRef.child(candidate).get();
+    if (!snap.exists()) return candidate;
+  }
+  throw new Error("Couldn't generate a unique ID right now — try again.");
+}
+
+async function createAccount(username, password) {
+  const cleanUsername = username.trim();
+  const usernameKey = normalizeUsernameKey(cleanUsername);
+  if (!isValidUsernameFormat(cleanUsername)) {
+    return { ok: false, error: "Username must be " + USERNAME_MIN_LENGTH + "-" + USERNAME_MAX_LENGTH + " characters: letters, numbers, or underscores only." };
+  }
+  if (!password || password.length < 4) return { ok: false, error: "Password must be at least 4 characters." };
+
+  const existing = await usernameIndexRef.child(usernameKey).get();
+  if (existing.exists()) return { ok: false, error: "That username is already taken." };
+
+  let newId;
+  try { newId = await generateUniqueId(); }
+  catch (e) { return { ok: false, error: e.message || "Couldn't generate an ID — try again." }; }
+
+  let passwordHash;
+  try { passwordHash = await hashPassword(password); }
+  catch (e) { return { ok: false, error: e.message || "Couldn't secure your password — try again." }; }
+
+  const accountRef = usersRef.push();
+  const accountKey = accountRef.key;
+  const accountData = {
+    username: cleanUsername, usernameLower: usernameKey, id: newId, password: passwordHash,
+    createdAt: firebase.database.ServerValue.TIMESTAMP,
+    friends: {}, friendRequestsIncoming: {}, friendRequestsOutgoing: {}, blockedUsers: {}
+  };
+
+  try {
+    const updates = {};
+    updates["users/" + accountKey] = accountData;
+    updates["usernameIndex/" + usernameKey] = accountKey;
+    updates["idIndex/" + newId] = accountKey;
+    await db.ref().update(updates);
+  } catch (e) { return { ok: false, error: "Couldn't create your account — try again." }; }
+
+  return { ok: true, accountKey, username: cleanUsername, id: newId };
+}
+
+async function findAccountKeyByIdentifier(identifier) {
+  const clean = identifier.trim();
+  if (isLikelyId(clean)) {
+    const snap = await idIndexRef.child(clean).get();
+    return snap.exists() ? snap.val() : null;
+  }
+  const usernameKey = normalizeUsernameKey(clean);
+  const snap = await usernameIndexRef.child(usernameKey).get();
+  return snap.exists() ? snap.val() : null;
+}
+
+async function login(identifier, password) {
+  if (!identifier.trim() || !password) return { ok: false, error: "Enter your username/ID and password." };
+  let accountKey;
+  try { accountKey = await findAccountKeyByIdentifier(identifier); }
+  catch (e) { return { ok: false, error: "Couldn't reach the server — try again." }; }
+  if (!accountKey) return { ok: false, error: "No account found with that username or ID." };
+
+  let accountSnap;
+  try { accountSnap = await usersRef.child(accountKey).get(); }
+  catch (e) { return { ok: false, error: "Couldn't reach the server — try again." }; }
+
+  const account = accountSnap.val();
+  let passwordOk = false;
+  try { passwordOk = !!account && await verifyPassword(password, account.password); }
+  catch (e) { return { ok: false, error: e.message || "Couldn't check your password — try again." }; }
+  if (!passwordOk) return { ok: false, error: "Incorrect password." };
+
+  // Upgrade an old plain-text password to a hash the first time it logs in.
+  if (!isHashedPassword(account.password)) {
+    try { await usersRef.child(accountKey).child("password").set(await hashPassword(password)); } catch (e) {}
+  }
+
+  // Chat bans are handled entirely by the chat room (chat.js) and never
+  // stop anyone signing in or using DMs, groups and friends.
+  return { ok: true, accountKey, username: account.username, id: account.id };
+}
+
+function saveSession(accountKey, username, id) {
+  try { localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify({ accountKey, username, id })); } catch (e) {}
+}
+function loadSession() {
+  try { const raw = localStorage.getItem(SESSION_STORAGE_KEY); return raw ? JSON.parse(raw) : null; } catch (e) { return null; }
+}
+function clearSession() { try { localStorage.removeItem(SESSION_STORAGE_KEY); } catch (e) {} }
+
+function claimPresence(accountKey, username) {
+  releasePresence();
+  myPresenceRef = presenceRef.child(accountKey);
+  myPresenceRef.onDisconnect().remove();
+  myPresenceRef.set({ username: username, joinedAt: firebase.database.ServerValue.TIMESTAMP });
+}
+function setDmAfk(v) {
+  if (!myPresenceRef) return;
+  try { (v ? myPresenceRef.child("afk").set(true) : myPresenceRef.child("afk").remove()).catch(() => {}); } catch (e) {}
+}
+function releasePresence() {
+  if (myPresenceRef && currentSession) recordLastSeen(currentSession.accountKey);
+  if (myPresenceRef) {
+    myPresenceRef.onDisconnect().cancel();
+    myPresenceRef.remove();
+    myPresenceRef = null;
+  }
+}
+async function recordLastSeen(accountKey) {
+  try { await usersRef.child(accountKey).child("lastSeen").set(firebase.database.ServerValue.TIMESTAMP); } catch (e) {}
+}
+
+function watchPresenceList(onList) {
+  presenceRef.on("value", snap => {
+    const val = snap.val() || {};
+    const list = Object.entries(val).map(([key, v]) => ({
+      accountKey: key, username: (v && v.username) || "Unknown", joinedAt: (v && v.joinedAt) || null, afk: !!(v && v.afk === true)
+    }));
+    onList(list);
+  });
+}
+
+async function searchByUsernamePrefix(prefix) {
+  const lower = prefix.trim().toLowerCase();
+  if (!lower) return [];
+  const endBound = lower + "\uf8ff";
+  const snap = await usernameIndexRef.orderByKey().startAt(lower).endAt(endBound).limitToFirst(20).get();
+  const val = snap.val() || {};
+  const entries = Object.entries(val);
+  const accounts = await Promise.all(entries.map(([, accountKey]) => usersRef.child(accountKey).get()));
+  return accounts.map((accSnap, i) => {
+    const acc = accSnap.val();
+    if (!acc) return null;
+    return { accountKey: entries[i][1], username: acc.username, id: acc.id };
+  }).filter(Boolean);
+}
+async function searchByExactId(idStr) {
+  const clean = idStr.trim();
+  if (!isLikelyId(clean)) return [];
+  const snap = await idIndexRef.child(clean).get();
+  if (!snap.exists()) return [];
+  const accountKey = snap.val();
+  const accountSnap = await usersRef.child(accountKey).get();
+  const account = accountSnap.val();
+  if (!account) return [];
+  return [{ accountKey, username: account.username, id: account.id }];
+}
+async function performSearch(query) {
+  const clean = query.trim();
+  if (!clean) return [];
+  if (isLikelyId(clean)) return searchByExactId(clean);
+  return searchByUsernamePrefix(clean);
+}
+
+function getRelationshipStatus(otherAccountKey) {
+  if (!currentUserData) return "unknown";
+  if (currentSession && otherAccountKey === currentSession.accountKey) return "self";
+  if (currentUserData.friends && currentUserData.friends[otherAccountKey]) return "friends";
+  if (currentUserData.friendRequestsOutgoing && currentUserData.friendRequestsOutgoing[otherAccountKey]) return "outgoing";
+  if (currentUserData.friendRequestsIncoming && currentUserData.friendRequestsIncoming[otherAccountKey]) return "incoming";
+  return "none";
+}
+
+async function sendFriendRequest(toAccountKey, toUsername) {
+  if (!currentSession) return { ok: false, error: "Not logged in." };
+  if (toAccountKey === currentSession.accountKey) return { ok: false, error: "You can't friend yourself." };
+  const status = getRelationshipStatus(toAccountKey);
+  if (status === "friends") return { ok: false, error: "Already friends." };
+  if (status === "outgoing") return { ok: false, error: "Request already pending." };
+
+  let isHiddenForRecipient = false;
+  try {
+    const blockSnap = await usersRef.child(toAccountKey).child("blockedUsers").child(currentSession.accountKey).get();
+    isHiddenForRecipient = blockSnap.exists();
+  } catch (e) { isHiddenForRecipient = false; }
+
+  const updates = {};
+  updates["users/" + toAccountKey + "/friendRequestsIncoming/" + currentSession.accountKey] = {
+    fromUsername: currentSession.username, sentAt: firebase.database.ServerValue.TIMESTAMP, hidden: isHiddenForRecipient
+  };
+  updates["users/" + currentSession.accountKey + "/friendRequestsOutgoing/" + toAccountKey] = {
+    toUsername: toUsername, sentAt: firebase.database.ServerValue.TIMESTAMP
+  };
+  try { await db.ref().update(updates); return { ok: true }; }
+  catch (e) { return { ok: false, error: "Couldn't send request — try again." }; }
+}
+
+async function acceptFriendRequest(fromAccountKey, fromUsername) {
+  if (!currentSession) return { ok: false, error: "Not logged in." };
+  const updates = {};
+  updates["users/" + currentSession.accountKey + "/friendRequestsIncoming/" + fromAccountKey] = null;
+  updates["users/" + fromAccountKey + "/friendRequestsOutgoing/" + currentSession.accountKey] = null;
+  updates["users/" + currentSession.accountKey + "/friends/" + fromAccountKey] = { username: fromUsername, since: firebase.database.ServerValue.TIMESTAMP };
+  updates["users/" + fromAccountKey + "/friends/" + currentSession.accountKey] = { username: currentSession.username, since: firebase.database.ServerValue.TIMESTAMP };
+  try { await db.ref().update(updates); return { ok: true }; }
+  catch (e) { return { ok: false, error: "Couldn't accept — try again." }; }
+}
+
+async function declineFriendRequest(fromAccountKey) {
+  if (!currentSession) return { ok: false, error: "Not logged in." };
+  const updates = {};
+  updates["users/" + currentSession.accountKey + "/friendRequestsIncoming/" + fromAccountKey] = null;
+  updates["users/" + fromAccountKey + "/friendRequestsOutgoing/" + currentSession.accountKey] = null;
+  try { await db.ref().update(updates); return { ok: true }; }
+  catch (e) { return { ok: false, error: "Couldn't decline — try again." }; }
+}
+
+async function cancelOutgoingRequest(toAccountKey) {
+  if (!currentSession) return { ok: false, error: "Not logged in." };
+  const updates = {};
+  updates["users/" + currentSession.accountKey + "/friendRequestsOutgoing/" + toAccountKey] = null;
+  updates["users/" + toAccountKey + "/friendRequestsIncoming/" + currentSession.accountKey] = null;
+  try { await db.ref().update(updates); return { ok: true }; }
+  catch (e) { return { ok: false, error: "Couldn't cancel — try again." }; }
+}
+
+async function unfriend(otherAccountKey) {
+  if (!currentSession) return { ok: false, error: "Not logged in." };
+  const updates = {};
+  updates["users/" + currentSession.accountKey + "/friends/" + otherAccountKey] = null;
+  updates["users/" + otherAccountKey + "/friends/" + currentSession.accountKey] = null;
+  try { await db.ref().update(updates); return { ok: true }; }
+  catch (e) { return { ok: false, error: "Couldn't unfriend — try again." }; }
+}
+
+async function blockUser(otherAccountKey, otherUsername) {
+  if (!currentSession) return { ok: false, error: "Not logged in." };
+  if (otherAccountKey === currentSession.accountKey) return { ok: false, error: "You can't block yourself." };
+  const updates = {};
+  updates["users/" + currentSession.accountKey + "/friends/" + otherAccountKey] = null;
+  updates["users/" + otherAccountKey + "/friends/" + currentSession.accountKey] = null;
+  updates["users/" + currentSession.accountKey + "/friendRequestsIncoming/" + otherAccountKey] = null;
+  updates["users/" + otherAccountKey + "/friendRequestsOutgoing/" + currentSession.accountKey] = null;
+  updates["users/" + currentSession.accountKey + "/friendRequestsOutgoing/" + otherAccountKey] = null;
+  updates["users/" + otherAccountKey + "/friendRequestsIncoming/" + currentSession.accountKey] = null;
+  updates["users/" + currentSession.accountKey + "/blockedUsers/" + otherAccountKey] = { username: otherUsername, blockedAt: firebase.database.ServerValue.TIMESTAMP };
+  try { await db.ref().update(updates); return { ok: true }; }
+  catch (e) { return { ok: false, error: "Couldn't block — try again." }; }
+}
+
+async function unblockUser(otherAccountKey) {
+  if (!currentSession) return { ok: false, error: "Not logged in." };
+  try { await usersRef.child(currentSession.accountKey).child("blockedUsers").child(otherAccountKey).remove(); return { ok: true }; }
+  catch (e) { return { ok: false, error: "Couldn't unblock — try again." }; }
+}
+
+const BIO_MAX_LENGTH = 100;
+const AVATAR_MAX_DIMENSION = 64;
+const AVATAR_JPEG_QUALITY = 0.55;
+
+/* ── MZK "now playing" ──
+   People can paste a link code from MZK into their profile. MZK publishes the song under that
+   code in its own Firestore (project mzk-playa); here we only READ it, no sign-in needed.
+   Firestore is loaded lazily, the first time a code is actually looked at. */
+const MZK_CONFIG = {
+  apiKey: "AIzaSyDyKNOMa_YnIXlqtZ8OrIePHBOhudiEoUk",
+  authDomain: "mzk-playa.firebaseapp.com",
+  projectId: "mzk-playa",
+  storageBucket: "mzk-playa.firebasestorage.app",
+  messagingSenderId: "359354025989",
+  appId: "1:359354025989:web:281bf6bd232eedfefb346c"
+};
+const MZK_CODE_RE = /^[A-Z2-9]{5}-[A-Z2-9]{5}$/;
+const MZK_UID_RE = /^[A-Za-z0-9]{20,40}$/;
+/* A profile's song can come from a pasted code, OR from a linked MZK account. A linked account is written
+   "uid:<MZK account id>|<this profile's VUS id>"; the song is only shown while MZK's own links/<account id>
+   record points back at this same VUS id (both sides must agree). */
+function mzkSourceOf(prof) {
+  if (!prof) return "";
+  if (prof.mzkUid && MZK_UID_RE.test(String(prof.mzkUid)) && prof.id != null && prof.id !== "") return "uid:" + prof.mzkUid + "|" + String(prof.id);
+  return prof.mzk || "";
+}
+function parseMzkSource(src) {
+  const m = /^uid:([A-Za-z0-9]{20,40})\|(.+)$/.exec(String(src || ""));
+  return m ? { uid: m[1], owner: m[2] } : null;
+}
+const SONG_FRESH_MS = 150000;      // MZK sends a heartbeat every 45s while playing
+const MZK_MAX_WATCHERS = 40;
+let mzkDbPromise = null;
+
+function loadMzkDb() {
+  if (mzkDbPromise) return mzkDbPromise;
+  mzkDbPromise = new Promise((resolve, reject) => {
+    const start = () => {
+      try {
+        const app = firebase.apps.find(a => a.name === "vusMzk") || firebase.initializeApp(MZK_CONFIG, "vusMzk");
+        const fs = app.firestore();
+        try { fs.settings({ experimentalAutoDetectLongPolling: true, merge: true }); } catch (e) {}
+        resolve(fs);
+      } catch (e) { reject(e); }
+    };
+    if (firebase.firestore) { start(); return; }
+    const s = document.createElement("script");
+    s.src = "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js";
+    s.onload = start;
+    s.onerror = () => reject(new Error("Couldn't load MZK."));
+    document.head.appendChild(s);
+  }).catch(e => { mzkDbPromise = null; throw e; });
+  return mzkDbPromise;
+}
+
+// "k7f2m 92qxw" -> "K7F2M-92QXW"; "" -> ""; anything else -> null
+function normalizeMzkCode(raw) {
+  const s = String(raw || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  if (!s) return "";
+  return /^[A-Z2-9]{10}$/.test(s) ? s.slice(0, 5) + "-" + s.slice(5) : null;
+}
+
+// true / false, or null when we couldn't tell (offline, rules not added yet)
+async function mzkCodeExists(code) {
+  try {
+    const fs = await loadMzkDb();
+    const snap = await Promise.race([
+      fs.collection("nowPlaying").doc(code).get(),
+      new Promise(r => setTimeout(() => r(null), 6000))
+    ]);
+    return snap ? snap.exists : null;
+  } catch (e) { return null; }
+}
+
+function songFromDoc(d) {
+  if (!d || !d.playing) return null;
+  const title = String(d.title || "").trim().slice(0, 150);
+  if (!title) return null;
+  const ms = d.updated && typeof d.updated.toMillis === "function" ? d.updated.toMillis() : Date.now();
+  if (Date.now() - ms > SONG_FRESH_MS) return null;   // heartbeat stopped: they closed MZK
+  const cover = (typeof d.cover === "string" && d.cover.length <= 60000 && /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(d.cover)) ? d.cover : "";
+  return { title, artist: String(d.artist || "").trim().slice(0, 150), album: String(d.album || "").trim().slice(0, 150), cover };
+}
+
+// One live listener per code, shared by everything that shows it. A listener lingers for a few
+// seconds after its last user leaves, so re-drawing the member list doesn't thrash connections.
+const mzkWatch = new Map();   // code -> { subs, last, lastJson, data, unsub, tick, killTimer }
+function mzkSubscribe(code, cb) {
+  const acct = parseMzkSource(code);
+  if (!acct && !MZK_CODE_RE.test(code || "")) return () => {};
+  let e = mzkWatch.get(code);
+  if (!e) {
+    if (mzkWatch.size >= MZK_MAX_WATCHERS) return () => {};
+    e = { subs: new Set(), last: null, lastJson: "", data: null, unsub: null, unsubLink: null, linkOk: !acct, tick: null, killTimer: null };
+    mzkWatch.set(code, e);
+    const entry = e;
+    const publish = () => {
+      const song = entry.linkOk ? songFromDoc(entry.data) : null, j = song ? JSON.stringify(song) : "";
+      if (j === entry.lastJson) return;
+      entry.lastJson = j; entry.last = song;
+      entry.subs.forEach(f => { try { f(song); } catch (_) {} });
+    };
+    loadMzkDb().then(fs => {
+      if (mzkWatch.get(code) !== entry) return;
+      entry.unsub = fs.collection("nowPlaying").doc(acct ? acct.uid : code).onSnapshot(snap => {
+        entry.data = snap.exists ? snap.data() : null;
+        publish();
+      }, () => {});
+      if (acct) {
+        // the MZK account has to point back at this VUS id, otherwise nothing is shown
+        entry.unsubLink = fs.collection("links").doc(acct.uid).onSnapshot(snap => {
+          entry.linkOk = !!(snap.exists && String((snap.data() || {}).vusId) === acct.owner);
+          publish();
+        }, () => { entry.linkOk = false; publish(); });
+      }
+      entry.tick = setInterval(publish, 20000);   // notice a stopped heartbeat
+    }).catch(() => {});
+  }
+  clearTimeout(e.killTimer); e.killTimer = null;
+  e.subs.add(cb);
+  if (e.last) { try { cb(e.last); } catch (_) {} }
+  const entry = e;
+  return () => {
+    entry.subs.delete(cb);
+    if (entry.subs.size === 0 && !entry.killTimer) {
+      entry.killTimer = setTimeout(() => {
+        if (entry.subs.size) return;
+        if (entry.unsub) entry.unsub();
+        if (entry.unsubLink) entry.unsubLink();
+        clearInterval(entry.tick);
+        if (mzkWatch.get(code) === entry) mzkWatch.delete(code);
+      }, 8000);
+    }
+  };
+}
+function mzkStopAll() {
+  mzkWatch.forEach(e => { if (e.unsub) e.unsub(); if (e.unsubLink) e.unsubLink(); clearInterval(e.tick); clearTimeout(e.killTimer); });
+  mzkWatch.clear();
+}
+
+function buildSongCard(song) {
+  const cover = h("div", { className: "song-cover" });
+  if (song.cover) { const im = document.createElement("img"); im.alt = ""; im.src = song.cover; cover.appendChild(im); }
+  else cover.textContent = "♪";
+  return h("div", { className: "song-card" },
+    cover,
+    h("div", { className: "song-text" },
+      h("div", { className: "song-label" }, h("span", { className: "eq" }, h("i"), h("i"), h("i")), "Listening on MZK"),
+      h("div", { className: "song-title", title: song.title }, song.title),
+      song.artist ? h("div", { className: "song-artist", title: song.artist }, song.artist) : null));
+}
+// Shows the live song in `box` (hidden whenever nothing is playing). Returns an unsubscribe function.
+function mountSong(box, code) {
+  box.replaceChildren(); box.style.display = "none";
+  if (!code) return () => {};
+  return mzkSubscribe(code, song => {
+    if (!song) { box.replaceChildren(); box.style.display = "none"; return; }
+    box.replaceChildren(buildSongCard(song)); box.style.display = "";
+  });
+}
+// For the members list: look the person up by chat ID, then follow their song.
+function watchSongByLoginId(loginId, cb) {
+  let unsub = null, dead = false;
+  accountKeyForLoginId(loginId).then(k => k ? fetchAccountProfile(k) : null).then(prof => {
+    const src = mzkSourceOf(prof);
+    if (dead || !src) return;
+    unsub = mzkSubscribe(src, cb);
+  }).catch(() => {});
+  return () => { dead = true; if (unsub) unsub(); };
+}
+
+function compressAvatarFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const side = Math.min(img.width, img.height);
+          const sx = (img.width - side) / 2;
+          const sy = (img.height - side) / 2;
+          const canvas = document.createElement("canvas");
+          canvas.width = AVATAR_MAX_DIMENSION;
+          canvas.height = AVATAR_MAX_DIMENSION;
+          const ctx = canvas.getContext("2d");
+          if (!ctx) { reject(new Error("Couldn't process the image on this device.")); return; }
+          ctx.drawImage(img, sx, sy, side, side, 0, 0, AVATAR_MAX_DIMENSION, AVATAR_MAX_DIMENSION);
+          resolve(canvas.toDataURL("image/jpeg", AVATAR_JPEG_QUALITY));
+        } catch (e) { reject(new Error("Couldn't process that image.")); }
+      };
+      img.onerror = () => reject(new Error("That file doesn't look like a valid image."));
+      img.src = reader.result;
+    };
+    reader.onerror = () => reject(new Error("Couldn't read that file."));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function updateProfile(newUsername, newAvatarDataUrl, newBio, newMzk) {
+  if (!currentSession) return { ok: false, error: "Not logged in." };
+  const updates = {};
+  let usernameChanged = false;
+
+  if (newUsername !== undefined && newUsername !== null) {
+    const clean = newUsername.trim();
+    if (!isValidUsernameFormat(clean)) {
+      return { ok: false, error: "Name must be " + USERNAME_MIN_LENGTH + "-" + USERNAME_MAX_LENGTH + " characters: letters, numbers, or underscores only." };
+    }
+    if (clean !== currentSession.username) {
+      const usernameKey = normalizeUsernameKey(clean);
+      const existing = await usernameIndexRef.child(usernameKey).get();
+      if (existing.exists()) return { ok: false, error: "That username is already taken." };
+      updates["users/" + currentSession.accountKey + "/username"] = clean;
+      updates["users/" + currentSession.accountKey + "/usernameLower"] = usernameKey;
+      updates["usernameIndex/" + usernameKey] = currentSession.accountKey;
+      updates["usernameIndex/" + normalizeUsernameKey(currentSession.username)] = null;
+      usernameChanged = true;
+    }
+  }
+
+  if (newAvatarDataUrl !== undefined) {
+    updates["users/" + currentSession.accountKey + "/avatar"] = newAvatarDataUrl;
+  }
+
+  // MZK link code: checked up front so a typo can't half-save the rest of the profile.
+  let mzkToSave;
+  if (newMzk !== undefined) {
+    const norm = normalizeMzkCode(newMzk);
+    if (norm === null) return { ok: false, error: "That link code doesn't look right. It looks like K7F2M-92QXW." };
+    const currentMzk = String((currentUserData && currentUserData.mzk) || "");
+    if (norm !== currentMzk) {
+      if (norm && (await mzkCodeExists(norm)) === false) {
+        return { ok: false, error: "MZK doesn't know that code. In MZK, turn on “Show my song in VUS” and copy the code it shows." };
+      }
+      mzkToSave = norm;
+    }
+  }
+
+  // The bio is saved on its own, and only when it actually changed, so a problem with it
+  // can never stop your name or picture from saving.
+  let bioToSave;
+  if (newBio !== undefined) {
+    const bio = String(newBio || "").replace(/\s+/g, " ").trim().slice(0, BIO_MAX_LENGTH);
+    const current = String((currentUserData && currentUserData.bio) || "");
+    if (bio !== current) bioToSave = bio;
+  }
+
+  if (Object.keys(updates).length === 0 && bioToSave === undefined && mzkToSave === undefined) return { ok: true, username: currentSession.username };
+
+  if (Object.keys(updates).length > 0) {
+    if (usernameChanged) {
+      const block = await accountWriteBlock();
+      if (block) return { ok: false, error: block };
+    }
+    try {
+      await db.ref().update(updates);
+    } catch (e) {
+      console.error("profile save failed", e);
+      return { ok: false, error: friendlyDbError(e, "Couldn't save your name/picture") };
+    }
+    delete profileCache[currentSession.accountKey];
+    delete otherAvatarCache[currentSession.accountKey];
+    if (usernameChanged) {
+      currentSession.username = newUsername.trim();
+      saveSession(currentSession.accountKey, currentSession.username, currentSession.id);
+      claimPresence(currentSession.accountKey, currentSession.username);
+    }
+  }
+
+  if (bioToSave !== undefined) {
+    try {
+      await usersRef.child(currentSession.accountKey).child("bio").set(bioToSave || null);
+      delete profileCache[currentSession.accountKey];
+    } catch (e) {
+      console.error("bio save failed", e);
+      return { ok: false, error: friendlyDbError(e, "Your picture/name saved, but the bio couldn't") };
+    }
+  }
+
+  if (mzkToSave !== undefined) {
+    try {
+      await usersRef.child(currentSession.accountKey).child("mzk").set(mzkToSave || null);
+      delete profileCache[currentSession.accountKey];
+    } catch (e) {
+      console.error("mzk save failed", e);
+      return { ok: false, error: friendlyDbError(e, "The rest saved, but the MZK link couldn't") };
+    }
+  }
+  return { ok: true, username: currentSession.username };
+}
+
+
+/* ── Link by signing in to MZK ──
+   Signs in to the person's MZK account (mzk-playa project) once, checks the email is verified, writes
+   links/<mzk account id> = { vusId } on MZK's side, and saves the MZK account id on this VUS profile.
+   The password only goes to Firebase's own sign-in; nothing is stored here. Afterwards we sign out of MZK again. */
+let mzkAuthPromise = null;
+function loadMzkAuth() {
+  if (mzkAuthPromise) return mzkAuthPromise;
+  mzkAuthPromise = loadMzkDb().then(() => new Promise((resolve, reject) => {
+    const app = firebase.apps.find(a => a.name === "vusMzk");
+    if (firebase.auth) { resolve(app.auth()); return; }
+    const s = document.createElement("script");
+    s.src = "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js";
+    s.onload = () => { try { resolve(app.auth()); } catch (e) { reject(e); } };
+    s.onerror = () => reject(new Error("Couldn't load MZK sign-in."));
+    document.head.appendChild(s);
+  })).catch(e => { mzkAuthPromise = null; throw e; });
+  return mzkAuthPromise;
+}
+function mzkAuthMessage(e) {
+  const c = String((e && e.code) || "");
+  if (/invalid-credential|wrong-password|user-not-found/.test(c)) return "Wrong MZK email or password.";
+  if (/invalid-email/.test(c)) return "That email doesn't look right.";
+  if (/too-many-requests/.test(c)) return "Too many tries. Wait a bit and try again.";
+  if (/network/.test(c)) return "Couldn't reach MZK. Check your connection.";
+  if (/permission-denied/.test(c)) return "MZK's database rules don't allow linking yet.";
+  return (e && e.message) || "Couldn't sign in to MZK.";
+}
+async function linkMzkAccount(email, password) {
+  if (!currentSession) return { ok: false, error: "Not logged in." };
+  email = String(email || "").trim();
+  if (!email || !password) return { ok: false, error: "Enter your MZK email and password." };
+  let auth;
+  try { auth = await loadMzkAuth(); } catch (e) { return { ok: false, error: mzkAuthMessage(e) }; }
+  try {
+    const cred = await auth.signInWithEmailAndPassword(email, password);
+    const user = cred.user;
+    if (!user.emailVerified) {
+      await auth.signOut().catch(() => {});
+      return { ok: false, error: "Verify your email in MZK first (check your inbox), then try again." };
+    }
+    const fs = await loadMzkDb();
+    try { await fs.collection("links").doc(user.uid).set({ vusId: String(currentSession.id), updated: firebase.firestore.FieldValue.serverTimestamp() }); }
+    catch (e) { try { await auth.signOut(); } catch (_) {} return { ok: false, error: "MZK's Firestore rules refused links/" + user.uid.slice(0, 6) + "… (" + (e.code || e.message) + ")." }; }
+    const k = usersRef.child(currentSession.accountKey);
+    try { await k.child("mzkUid").set(user.uid); }
+    catch (e) { try { await auth.signOut(); } catch (_) {} return { ok: false, error: "VUS-DM database refused users/…/mzkUid (" + (e.code || e.message || "unknown") + "). Publish the latest vus-dm-rules.json — it has an mzkUid rule next to mzk." }; }
+    try { await k.child("mzk").set(null); } catch (e) { /* the old pasted code is just cleanup; the link itself is saved */ }   // the account link replaces any pasted code
+    delete profileCache[currentSession.accountKey];
+    clearVerifiedCache();
+    await auth.signOut().catch(() => {});
+    return { ok: true, uid: user.uid };
+  } catch (e) {
+    try { await auth.signOut(); } catch (_) {}
+    if (e && /permission/i.test(String(e.code || e.message || "")) && !/auth\//.test(String(e.code || ""))) {
+      return { ok: false, error: "The database rules don't allow linking yet." };
+    }
+    return { ok: false, error: mzkAuthMessage(e) };
+  }
+}
+async function clearMzkLink() {
+  if (!currentSession) return { ok: false, error: "Not logged in." };
+  try {
+    const k = usersRef.child(currentSession.accountKey);
+    await Promise.all([k.child("mzk").set(null), k.child("mzkUid").set(null)]);
+    delete profileCache[currentSession.accountKey];
+    clearVerifiedCache();
+    return { ok: true };
+  } catch (e) { return { ok: false, error: "VUS-DM database rules refused clearing mzk/mzkUid (" + (e.code || e.message) + ")." }; }
+}
+
+/* ── Verified = an MZK account (email verified at link time) linked to this VUS id ── */
+const verifiedMap = {}, verifiedInflight = {};
+const VERIFIED_TTL = 5 * 60 * 1000;
+function verifiedCached(loginId) {
+  const e = verifiedMap[String(loginId || "")];
+  return e && Date.now() - e.at < VERIFIED_TTL ? e.v : undefined;
+}
+function clearVerifiedCache() { Object.keys(verifiedMap).forEach(k => delete verifiedMap[k]); }
+function isVerifiedLoginId(loginId) {
+  const id = String(loginId || "");
+  if (!/^\d{6}$/.test(id)) return Promise.resolve(false);
+  const hit = verifiedCached(id);
+  if (hit !== undefined) return Promise.resolve(hit);
+  if (verifiedInflight[id]) return verifiedInflight[id];
+  const p = (async () => {
+    let v = false;
+    try {
+      const key = await accountKeyForLoginId(id);
+      const prof = key ? await fetchAccountProfile(key) : null;
+      if (prof && prof.mzkUid && String(prof.id) === id) {
+        const fs = await loadMzkDb();
+        const snap = await fs.collection("links").doc(prof.mzkUid).get();
+        v = snap.exists && String((snap.data() || {}).vusId) === id;
+      }
+    } catch (e) { delete verifiedInflight[id]; return false; }
+    verifiedMap[id] = { v, at: Date.now() };
+    delete verifiedInflight[id];
+    return v;
+  })();
+  verifiedInflight[id] = p;
+  return p;
+}
+
+function friendlyDbError(e, prefix) {
+  const code = String((e && (e.code || e.message)) || "");
+  if (/permission/i.test(code)) return prefix + ": the database rules don't allow it yet.";
+  return prefix + " — try again.";
+}
+
+async function changePassword(currentPassword, newPassword) {
+  if (!currentSession) return { ok: false, error: "Not logged in." };
+  if (!newPassword || newPassword.length < 4) return { ok: false, error: "New password must be at least 4 characters." };
+  try {
+    const block = await accountWriteBlock();
+    if (block) return { ok: false, error: block };
+    const snap = await usersRef.child(currentSession.accountKey).child("password").get();
+    if (!(await verifyPassword(currentPassword, snap.val()))) return { ok: false, error: "Current password is incorrect." };
+    await usersRef.child(currentSession.accountKey).child("password").set(await hashPassword(newPassword));
+    return { ok: true };
+  } catch (e) { return { ok: false, error: friendlyDbError(e, "Couldn't change password") }; }
+}
+
+let currentUserData = null;
+function watchOwnAccount(accountKey, onChange) {
+  usersRef.child(accountKey).on("value", snap => { currentUserData = snap.val(); onChange(currentUserData); });
+}
+function unwatchOwnAccount(accountKey) {
+  if (accountKey) usersRef.child(accountKey).off("value");
+  currentUserData = null;
+}
+
+function threadIdFor(accountKeyA, accountKeyB) { return [accountKeyA, accountKeyB].sort().join("_"); }
+
+async function sendDirectMessage(otherAccountKey, text, imageData, replyTo) {
+  if (!currentSession) return { ok: false, error: "Not logged in." };
+  const clean = (text || "").trim();
+  if (!clean && !imageData) return { ok: false, error: "Message is empty." };
+  const threadId = threadIdFor(currentSession.accountKey, otherAccountKey);
+  try {
+    const pushRef = dmsRef.child(threadId).child("messages").push();
+    await pushRef.set({
+      fromAccountKey: currentSession.accountKey,
+      ...(clean ? { text: clean } : {}),
+      ...(imageData ? { imageData: imageData } : {}),
+      ...(replyTo ? { replyTo: replyTo.id, replyToLabel: replyTo.fromLabel, replyToSnippet: replyTo.snippet } : {}),
+      ts: firebase.database.ServerValue.TIMESTAMP
+    });
+    await markThreadRead(threadId, pushRef.key);
+    // Not friends yet: leave a 0 marker on their account so the thread shows up under "Other chats" for them.
+    if (!(currentUserData && currentUserData.friends && currentUserData.friends[otherAccountKey])) {
+      try {
+        const markRef = usersRef.child(otherAccountKey).child("lastRead").child(threadId);
+        if (!(await markRef.get()).exists()) await markRef.set(0);
+      } catch (e) {}
+    }
+    return { ok: true };
+  } catch (e) { return { ok: false, error: "Message failed to send — try again." }; }
+}
+
+async function editDirectMessage(threadId, messageId, newText) {
+  const clean = (newText || "").trim();
+  if (!clean) return { ok: false, error: "Message can't be empty." };
+  try {
+    await dmsRef.child(threadId).child("messages").child(messageId).update({ text: clean, editedAt: firebase.database.ServerValue.TIMESTAMP });
+    return { ok: true };
+  } catch (e) { return { ok: false, error: "Couldn't edit — try again." }; }
+}
+async function deleteDirectMessage(threadId, messageId) {
+  try {
+    await dmsRef.child(threadId).child("messages").child(messageId).update({ deleted: true, text: null, imageData: null });
+    return { ok: true };
+  } catch (e) { return { ok: false, error: "Couldn't delete — try again." }; }
+}
+async function toggleReaction(scopeRef, messageId, emoji) {
+  if (!currentSession) return;
+  const reactionRef = scopeRef.child("messages").child(messageId).child("reactions").child(emoji).child(currentSession.accountKey);
+  try {
+    const snap = await reactionRef.get();
+    if (snap.exists()) await reactionRef.remove();
+    else await reactionRef.set(true);
+  } catch (e) { showComposerNotice("Couldn't react — try again."); }
+}
+
+async function markThreadRead(threadId, lastMessageId, isGroup) {
+  if (!currentSession || !lastMessageId) return;
+  markLastRead(threadId);
+  if (isGroup) return;
+  try { await dmsRef.child(threadId).child("reads").child(currentSession.accountKey).set(lastMessageId); } catch (e) {}
+}
+
+let currentThreadMessagesRef = null;
+let currentThreadChangedRef = null;
+function watchThreadMessages(otherAccountKey, onAdd, onChanged) {
+  stopWatchingOpenChat();
+  const threadId = threadIdFor(currentSession.accountKey, otherAccountKey);
+  currentThreadMessagesRef = dmsRef.child(threadId).child("messages");
+  currentThreadMessagesRef.limitToLast(200).on("child_added", snap => onAdd({ id: snap.key, ...snap.val() }));
+  currentThreadChangedRef = currentThreadMessagesRef;
+  currentThreadChangedRef.on("child_changed", snap => onChanged({ id: snap.key, ...snap.val() }));
+  return threadId;
+}
+function stopWatchingOpenChat() {
+  if (currentThreadMessagesRef) {
+    currentThreadMessagesRef.off("child_added");
+    if (currentThreadChangedRef) currentThreadChangedRef.off("child_changed");
+    currentThreadMessagesRef = null;
+    currentThreadChangedRef = null;
+  }
+  if (currentGroupMessagesRef) {
+    currentGroupMessagesRef.off("child_added");
+    currentGroupMessagesRef.off("child_changed");
+    currentGroupMessagesRef = null;
+  }
+  unwatchTyping();
+  unwatchThreadReads();
+}
+
+let typingRef = null;
+let typingTimer = null;
+function scopeTypingRef(isGroup, id) {
+  return isGroup ? groupChatsRef.child(id).child("typing") : dmsRef.child(threadIdFor(currentSession.accountKey, id)).child("typing");
+}
+function setTyping(isGroup, id, isTyping) {
+  if (!currentSession) return;
+  const ref = scopeTypingRef(isGroup, id).child(currentSession.accountKey);
+  if (isTyping) ref.set(firebase.database.ServerValue.TIMESTAMP);
+  else ref.remove();
+}
+function watchTyping(isGroup, id, onChange) {
+  unwatchTyping();
+  typingRef = scopeTypingRef(isGroup, id);
+  typingRef.on("value", snap => {
+    const val = snap.val() || {};
+    const now = Date.now();
+    const activeUsernames = [];
+    Object.entries(val).forEach(([key, ts]) => {
+      if (key === currentSession.accountKey) return;
+      if (typeof ts === "number" && now - ts < TYPING_TIMEOUT_MS) {
+        const name = isGroup
+          ? ((currentGroupInfo && currentGroupInfo.members && currentGroupInfo.members[key] && currentGroupInfo.members[key].username) || "Someone")
+          : (openChatUsername || "Someone");
+        activeUsernames.push(name);
+      }
+    });
+    onChange(activeUsernames);
+  });
+}
+function unwatchTyping() {
+  if (typingRef) { typingRef.off("value"); typingRef = null; }
+}
+
+let threadReadsRef = null;
+function watchThreadReads(threadId, onChange) {
+  unwatchThreadReads();
+  threadReadsRef = dmsRef.child(threadId).child("reads");
+  threadReadsRef.on("value", snap => onChange(snap.val() || {}));
+}
+function unwatchThreadReads() {
+  if (threadReadsRef) { threadReadsRef.off("value"); threadReadsRef = null; }
+}
+
+async function createGroupChat(name) {
+  if (!currentSession) return { ok: false, error: "Not logged in." };
+  const clean = name.trim();
+  if (!clean) return { ok: false, error: "Group name can't be empty." };
+  if (clean.length > 40) return { ok: false, error: "Group name is too long." };
+  const gcRef = groupChatsRef.push();
+  const gcData = {
+    name: clean, ownerAccountKey: currentSession.accountKey, createdAt: firebase.database.ServerValue.TIMESTAMP,
+    members: { [currentSession.accountKey]: { username: currentSession.username, joinedAt: firebase.database.ServerValue.TIMESTAMP } }
+  };
+  try { await gcRef.set(gcData); return { ok: true, gcId: gcRef.key }; }
+  catch (e) { return { ok: false, error: "Couldn't create the group — try again." }; }
+}
+async function inviteToGroupChat(gcId, friendAccountKey, friendUsername) {
+  if (!currentSession) return { ok: false, error: "Not logged in." };
+  let gcSnap;
+  try { gcSnap = await groupChatsRef.child(gcId).get(); }
+  catch (e) { return { ok: false, error: "Couldn't reach the server — try again." }; }
+  const gc = gcSnap.val();
+  if (!gc) return { ok: false, error: "Group no longer exists." };
+  if (gc.ownerAccountKey !== currentSession.accountKey) return { ok: false, error: "Only the group owner can invite." };
+  const members = gc.members || {};
+  if (members[friendAccountKey]) return { ok: false, error: "Already in the group." };
+  if (Object.keys(members).length >= GC_MAX_MEMBERS) return { ok: false, error: "Group is full (" + GC_MAX_MEMBERS + " max)." };
+  try {
+    await groupChatsRef.child(gcId).child("members").child(friendAccountKey).set({ username: friendUsername, joinedAt: firebase.database.ServerValue.TIMESTAMP });
+    return { ok: true };
+  } catch (e) { return { ok: false, error: "Couldn't invite — try again." }; }
+}
+async function kickFromGroupChat(gcId, targetAccountKey) {
+  if (!currentSession) return { ok: false, error: "Not logged in." };
+  let gcSnap;
+  try { gcSnap = await groupChatsRef.child(gcId).get(); }
+  catch (e) { return { ok: false, error: "Couldn't reach the server — try again." }; }
+  const gc = gcSnap.val();
+  if (!gc) return { ok: false, error: "Group no longer exists." };
+  if (gc.ownerAccountKey !== currentSession.accountKey) return { ok: false, error: "Only the group owner can remove members." };
+  if (targetAccountKey === currentSession.accountKey) return { ok: false, error: "Use transfer/leave instead of kicking yourself." };
+  try { await groupChatsRef.child(gcId).child("members").child(targetAccountKey).remove(); return { ok: true }; }
+  catch (e) { return { ok: false, error: "Couldn't remove member — try again." }; }
+}
+async function transferGroupOwnership(gcId, newOwnerAccountKey) {
+  if (!currentSession) return { ok: false, error: "Not logged in." };
+  let gcSnap;
+  try { gcSnap = await groupChatsRef.child(gcId).get(); }
+  catch (e) { return { ok: false, error: "Couldn't reach the server — try again." }; }
+  const gc = gcSnap.val();
+  if (!gc) return { ok: false, error: "Group no longer exists." };
+  if (gc.ownerAccountKey !== currentSession.accountKey) return { ok: false, error: "Only the current owner can transfer ownership." };
+  const members = gc.members || {};
+  if (!members[newOwnerAccountKey]) return { ok: false, error: "That person isn't in the group." };
+  try { await groupChatsRef.child(gcId).child("ownerAccountKey").set(newOwnerAccountKey); return { ok: true }; }
+  catch (e) { return { ok: false, error: "Couldn't transfer ownership — try again." }; }
+}
+async function leaveGroupChat(gcId) {
+  if (!currentSession) return { ok: false, error: "Not logged in." };
+  let gcSnap;
+  try { gcSnap = await groupChatsRef.child(gcId).get(); }
+  catch (e) { return { ok: false, error: "Couldn't reach the server — try again." }; }
+  const gc = gcSnap.val();
+  if (!gc) return { ok: true };
+  const members = gc.members || {};
+  const isOwner = gc.ownerAccountKey === currentSession.accountKey;
+  const remainingKeys = Object.keys(members).filter(k => k !== currentSession.accountKey);
+  try {
+    if (remainingKeys.length === 0) { await groupChatsRef.child(gcId).remove(); return { ok: true }; }
+    const updates = {};
+    updates["members/" + currentSession.accountKey] = null;
+    if (isOwner) updates["ownerAccountKey"] = remainingKeys[Math.floor(Math.random() * remainingKeys.length)];
+    await groupChatsRef.child(gcId).update(updates);
+    return { ok: true };
+  } catch (e) { return { ok: false, error: "Couldn't leave the group — try again." }; }
+}
+async function sendGroupMessage(gcId, text, imageData, replyTo) {
+  if (!currentSession) return { ok: false, error: "Not logged in." };
+  const clean = (text || "").trim();
+  if (!clean && !imageData) return { ok: false, error: "Message is empty." };
+  try {
+    await groupChatsRef.child(gcId).child("messages").push({
+      fromAccountKey: currentSession.accountKey, fromUsername: currentSession.username,
+      ...(clean ? { text: clean } : {}), ...(imageData ? { imageData: imageData } : {}),
+      ...(replyTo ? { replyTo: replyTo.id, replyToLabel: replyTo.fromLabel, replyToSnippet: replyTo.snippet } : {}),
+      ts: firebase.database.ServerValue.TIMESTAMP
+    });
+    return { ok: true };
+  } catch (e) { return { ok: false, error: "Message failed to send — try again." }; }
+}
+async function editGroupMessage(gcId, messageId, newText) {
+  const clean = (newText || "").trim();
+  if (!clean) return { ok: false, error: "Message can't be empty." };
+  try {
+    await groupChatsRef.child(gcId).child("messages").child(messageId).update({ text: clean, editedAt: firebase.database.ServerValue.TIMESTAMP });
+    return { ok: true };
+  } catch (e) { return { ok: false, error: "Couldn't edit — try again." }; }
+}
+async function deleteGroupMessage(gcId, messageId) {
+  try {
+    await groupChatsRef.child(gcId).child("messages").child(messageId).update({ deleted: true, text: null, imageData: null });
+    return { ok: true };
+  } catch (e) { return { ok: false, error: "Couldn't delete — try again." }; }
+}
+
+let currentGroupMessagesRef = null;
+function watchGroupMessages(gcId, onAdd, onChanged) {
+  stopWatchingOpenChat();
+  currentGroupMessagesRef = groupChatsRef.child(gcId).child("messages");
+  currentGroupMessagesRef.limitToLast(200).on("child_added", snap => onAdd({ id: snap.key, ...snap.val() }));
+  currentGroupMessagesRef.on("child_changed", snap => onChanged({ id: snap.key, ...snap.val() }));
+}
+
+let currentGroupInfoRef = null;
+let currentGroupInfo = null;
+function watchGroupInfo(gcId, onChange) {
+  unwatchGroupInfo();
+  currentGroupInfoRef = groupChatsRef.child(gcId);
+  currentGroupInfoRef.on("value", snap => { currentGroupInfo = snap.val(); onChange(currentGroupInfo); });
+}
+function unwatchGroupInfo() {
+  if (currentGroupInfoRef) currentGroupInfoRef.off("value");
+  currentGroupInfoRef = null;
+  currentGroupInfo = null;
+}
+
+function watchMyGroupChats(onList) {
+  groupChatsRef.on("value", snap => {
+    const val = snap.val() || {};
+    const mine = Object.entries(val)
+      .filter(([, gc]) => gc.members && currentSession && gc.members[currentSession.accountKey])
+      .map(([gcId, gc]) => ({ gcId, ...gc }));
+    onList(mine);
+  });
+}
+function unwatchMyGroupChats() { groupChatsRef.off("value"); }
+
+const MAX_IMAGE_SOURCE_BYTES = 15 * 1024 * 1024;
+const IMAGE_MAX_DIMENSION = 1000;
+const IMAGE_JPEG_QUALITY = 0.7;
+
+function compressImageFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const scale = Math.min(1, IMAGE_MAX_DIMENSION / Math.max(img.width, img.height));
+          const width = Math.max(1, Math.round(img.width * scale));
+          const height = Math.max(1, Math.round(img.height * scale));
+          const canvas = document.createElement("canvas");
+          canvas.width = width; canvas.height = height;
+          const ctx = canvas.getContext("2d");
+          if (!ctx) { reject(new Error("Couldn't process the image on this device.")); return; }
+          ctx.drawImage(img, 0, 0, width, height);
+          resolve(canvas.toDataURL("image/jpeg", IMAGE_JPEG_QUALITY));
+        } catch (e) { reject(new Error("Couldn't process that image.")); }
+      };
+      img.onerror = () => reject(new Error("That file doesn't look like a valid image."));
+      img.src = reader.result;
+    };
+    reader.onerror = () => reject(new Error("Couldn't read that file."));
+    reader.readAsDataURL(file);
+  });
+}
+
+function h(tag, props, ...children) {
+  const el = document.createElement(tag);
+  if (props) {
+    Object.entries(props).forEach(([k, v]) => {
+      if (k === "className") el.className = v;
+      else if (k.startsWith("on") && typeof v === "function") el.addEventListener(k.slice(2).toLowerCase(), v);
+      else if (k === "html") el.innerHTML = v;
+      else if (v !== undefined && v !== null) el.setAttribute(k, v);
+    });
+  }
+  children.flat().forEach(c => {
+    if (c === null || c === undefined || c === false) return;
+    el.appendChild(c instanceof Node ? c : document.createTextNode(String(c)));
+  });
+  return el;
+}
+
+function esc(s = "") {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+const URL_RE = /(https?:\/\/[^\s<]+)/g;
+function linkify(escapedText) {
+  return escapedText.replace(URL_RE, url => {
+    const trimmed = url.replace(/[),.]+$/, "");
+    const trailing = url.slice(trimmed.length);
+    return `<a href="${trimmed}" target="_blank" rel="noopener noreferrer">${trimmed}</a>${trailing}`;
+  });
+}
+
+const QUICK_EMOJIS = ["😀","😂","😍","😅","😊","🙂","😉","😎","🤔","😢","😭","😡","👍","👎","👏","🙏","🔥","💯","❤️","💀","🎉","✅","❌","👀","😴","🥳","🤯","😬","🫡","🙃"];
+
+function formatTimeShort(ts) {
+  return ts ? new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+}
+function formatDateSeparator(ts) {
+  const d = new Date(ts);
+  const now = new Date();
+  const isToday = d.toDateString() === now.toDateString();
+  const yesterday = new Date(now); yesterday.setDate(now.getDate() - 1);
+  const isYesterday = d.toDateString() === yesterday.toDateString();
+  if (isToday) return "Today";
+  if (isYesterday) return "Yesterday";
+  return d.toLocaleDateString([], { month: "short", day: "numeric", year: d.getFullYear() !== now.getFullYear() ? "numeric" : undefined });
+}
+function ago(ts) {
+  const mins = Math.floor((Date.now() - ts) / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return mins + (mins === 1 ? " minute ago" : " minutes ago");
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return hrs + (hrs === 1 ? " hour ago" : " hours ago");
+  const days = Math.floor(hrs / 24);
+  if (days < 30) return days + (days === 1 ? " day ago" : " days ago");
+  return new Date(ts).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+}
+function formatLastSeen(ts) {
+  if (!ts) return "Offline";
+  const diffMs = Date.now() - ts;
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 1) return "Last seen just now";
+  if (mins < 60) return "Last seen " + mins + "m ago";
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return "Last seen " + hrs + "h ago";
+  const days = Math.floor(hrs / 24);
+  if (days < 7) return "Last seen " + days + "d ago";
+  return "Last seen " + new Date(ts).toLocaleDateString([], { month: "short", day: "numeric" });
+}
+
+/* ══════════════════════════════════════════════════════════
+   UI WIRING
+   ══════════════════════════════════════════════════════════ */
+const $authFlow = document.getElementById("authFlow");
+const $appShell = document.getElementById("appShell");
+
+const $rail = document.getElementById("rail");
+const $railAvatarBtn = document.getElementById("railAvatarBtn");
+const $tabChats = document.getElementById("navChats");
+const $tabFind = document.getElementById("navFind");
+const $tabBlocked = document.getElementById("navBlocked");
+const $tabChatRoom = document.getElementById("navChat");
+const $chatRoomPane = document.getElementById("chatRoomPane");
+const $chatPane = document.getElementById("chatPane");
+const $findRailDot = document.getElementById("findRailDot");
+
+const $profilePopover = document.getElementById("profilePopover");
+const $profileAvatarPreviewBtn = document.getElementById("profileAvatarPreviewBtn");
+const $profileAvatarFileInput = document.getElementById("profileAvatarFileInput");
+const $profileNameInput = document.getElementById("profileNameInput");
+const $profileSaveBtn = document.getElementById("profileSaveBtn");
+const $profileBioInput = document.getElementById("profileBioInput");
+const $profileMzkInput = document.getElementById("profileMzkInput");
+const $profileBioCount = document.getElementById("profileBioCount");
+const $profilePopoverError = document.getElementById("profilePopoverError");
+
+const $listPaneYouName = document.getElementById("listPaneYouName");
+const $listPaneYouId = document.getElementById("listPaneYouId");
+const $viewChats = document.getElementById("viewChats");
+const $viewFind = document.getElementById("viewFind");
+const $viewBlocked = document.getElementById("viewBlocked");
+
+const $chatEmptyState = document.getElementById("chatEmptyState");
+const $chatThread = document.getElementById("chatThread");
+const $chatBackBtn = document.getElementById("chatBackBtn");
+const $chatThreadAvatar = document.getElementById("chatThreadAvatar");
+const $chatThreadPresenceBadge = document.getElementById("chatThreadPresenceBadge");
+const $chatThreadHeaderName = document.getElementById("chatThreadHeaderName");
+const $chatThreadHeaderStatus = document.getElementById("chatThreadHeaderStatus");
+const $chatMessages = document.getElementById("chatMessages");
+const $typingIndicatorBar = document.getElementById("typingIndicatorBar");
+const $replyPreviewBar = document.getElementById("replyPreviewBar");
+const $replyPreviewText = document.getElementById("replyPreviewText");
+const $cancelReplyBtn = document.getElementById("cancelReplyBtn");
+const $editingBar = document.getElementById("editingBar");
+const $cancelEditBtn = document.getElementById("cancelEditBtn");
+const $chatMsgInput = document.getElementById("chatMsgInput");
+const $chatSendBtn = document.getElementById("chatSendBtn");
+const $uploadImageBtn = document.getElementById("uploadImageBtn");
+const $imageFileInput = document.getElementById("imageFileInput");
+const $pendingImageBar = document.getElementById("pendingImageBar");
+const $pendingImagePreview = document.getElementById("pendingImagePreview");
+const $cancelPendingImageBtn = document.getElementById("cancelPendingImageBtn");
+const $emojiPickerBtn = document.getElementById("emojiPickerBtn");
+const $emojiPickerPopover = document.getElementById("emojiPickerPopover");
+const $imageLightbox = document.getElementById("imageLightbox");
+const $imageLightboxImg = document.getElementById("imageLightboxImg");
+
+const $tabLogin = document.getElementById("tabLogin");
+const $tabSignup = document.getElementById("tabSignup");
+const $loginFields = document.getElementById("loginFields");
+const $signupFields = document.getElementById("signupFields");
+const $authForm = document.getElementById("authForm");
+const $authSubmitBtn = document.getElementById("authSubmitBtn");
+const $authError = document.getElementById("authError");
+const $authSuccess = document.getElementById("authSuccess");
+
+const $loginIdentifier = document.getElementById("loginIdentifier");
+const $loginPassword = document.getElementById("loginPassword");
+const $signupUsername = document.getElementById("signupUsername");
+const $signupPassword = document.getElementById("signupPassword");
+const $signupPasswordConfirm = document.getElementById("signupPasswordConfirm");
+
+const $newIdReveal = document.getElementById("newIdReveal");
+const $revealedId = document.getElementById("revealedId");
+const $newIdContinueBtn = document.getElementById("newIdContinueBtn");
+
+const $onlineCountText = document.getElementById("onlineCountText");
+const $onlineList = document.getElementById("onlineList");
+const $onlineEmpty = document.getElementById("onlineEmpty");
+
+const $searchInput = document.getElementById("searchInput");
+const $searchBtn = document.getElementById("searchBtn");
+const $searchResults = document.getElementById("searchResults");
+const $searchEmpty = document.getElementById("searchEmpty");
+
+const $incomingRequestsList = document.getElementById("incomingRequestsList");
+const $incomingRequestsEmpty = document.getElementById("incomingRequestsEmpty");
+const $incomingCountBadge = document.getElementById("incomingCountBadge");
+const $hiddenRequestsList = document.getElementById("hiddenRequestsList");
+const $hiddenRequestsEmpty = document.getElementById("hiddenRequestsEmpty");
+const $hiddenCountBadge = document.getElementById("hiddenCountBadge");
+const $outgoingRequestsList = document.getElementById("outgoingRequestsList");
+const $outgoingRequestsEmpty = document.getElementById("outgoingRequestsEmpty");
+const $friendsList = document.getElementById("friendsList");
+const $friendsEmpty = document.getElementById("friendsEmpty");
+const $blockedList = document.getElementById("blockedList");
+const $blockedEmpty = document.getElementById("blockedEmpty");
+
+const $newGroupBtn = document.getElementById("newGroupBtn");
+const $groupsList = document.getElementById("groupsList");
+const $groupsEmpty = document.getElementById("groupsEmpty");
+const $groupInfoBtn = document.getElementById("groupInfoBtn");
+const $modalOverlay = document.getElementById("modalOverlay");
+const $modalBox = document.getElementById("modalBox");
+
+
+let mode = "login";
+let currentSession = null;
+
+function setMode(newMode) {
+  mode = newMode;
+  $authError.textContent = "";
+  $authSuccess.style.display = "none";
+  $newIdReveal.style.display = "none";
+  $authForm.style.display = "flex";
+  $authForm.style.flexDirection = "column";
+  $authForm.style.gap = "12px";
+  if (mode === "login") {
+    $tabLogin.classList.add("active"); $tabSignup.classList.remove("active");
+    $loginFields.style.display = "flex"; $signupFields.style.display = "none";
+    $authSubmitBtn.textContent = "Log In";
+  } else {
+    $tabSignup.classList.add("active"); $tabLogin.classList.remove("active");
+    $loginFields.style.display = "none"; $signupFields.style.display = "flex";
+    $authSubmitBtn.textContent = "Sign Up";
+  }
+}
+$tabLogin.addEventListener("click", () => setMode("login"));
+$tabSignup.addEventListener("click", () => setMode("signup"));
+
+let composerNoticeTimer = null;
+function showComposerNotice(text) {
+  $authError.textContent = text;
+  clearTimeout(composerNoticeTimer);
+  composerNoticeTimer = setTimeout(() => { $authError.textContent = ""; }, 4000);
+}
+
+function renderAvatarInto(container, username, avatarDataUrl) {
+  container.innerHTML = "";
+  if (avatarDataUrl) {
+    const img = document.createElement("img");
+    img.src = avatarDataUrl;
+    img.alt = "";
+    container.appendChild(img);
+  } else {
+    container.textContent = initialsFor(username);
+  }
+}
+function initialsFor(username) { return (username || "?").trim().slice(0, 1).toUpperCase(); }
+
+let otherAvatarCache = {};
+async function fetchAndCacheAvatar(accountKey, onLoaded) {
+  if (accountKey in otherAvatarCache) { onLoaded(otherAvatarCache[accountKey]); return; }
+  try {
+    const snap = await usersRef.child(accountKey).child("avatar").get();
+    otherAvatarCache[accountKey] = snap.val() || null;
+  } catch (e) { otherAvatarCache[accountKey] = null; }
+  onLoaded(otherAvatarCache[accountKey]);
+}
+
+/* ── Public profile lookups (username, ID, picture, bio), cached ── */
+const PROFILE_CACHE_MS = 60000;   // short, so a new picture / bio / MZK link shows up for others without a reload
+/* Banners: a colour (#rrggbb) or a JPEG picture. Anything else in the database is ignored. */
+function safeColor(c) { return typeof c === "string" && /^#[0-9a-fA-F]{6}$/.test(c) ? c : ""; }
+function safeBanner(b) { return typeof b === "string" && /^data:image\/jpeg;base64,[A-Za-z0-9+\/=]+$/.test(b) && b.length <= 300000 ? b : ""; }
+function shade(hex, f) {
+  const n = parseInt(hex.slice(1), 16);
+  const ch = s => Math.max(0, Math.min(255, Math.round(((n >> s) & 255) * f)));
+  return "rgb(" + ch(16) + "," + ch(8) + "," + ch(0) + ")";
+}
+function paintBanner(elm, prof) {
+  if (!elm) return;
+  const img = prof && safeBanner(prof.banner), col = prof && safeColor(prof.bannerColor);
+  if (img) { elm.style.background = "#0f172a url(" + img + ") center/cover no-repeat"; }
+  else if (col) { elm.style.background = "linear-gradient(135deg," + col + "," + shade(col, 0.45) + ")"; }
+  else elm.style.removeProperty("background");
+}
+const profileCache = {};     // accountKey -> { accountKey, username, id, avatar, bio, mzk }
+const profileInflight = {};
+const idToAccountKey = {};
+function fetchAccountProfile(accountKey) {
+  if (!accountKey) return Promise.resolve(null);
+  const hit = profileCache[accountKey];
+  if (hit && Date.now() - (hit._at || 0) < PROFILE_CACHE_MS) return Promise.resolve(hit);
+  if (profileInflight[accountKey]) return profileInflight[accountKey];
+  const base = usersRef.child(accountKey);
+  const p = Promise.all(["username", "id", "avatar", "bio", "mzk", "createdAt", "mzkUid", "banner", "bannerColor"].map(k => base.child(k).get())).then(snaps => {
+    delete profileInflight[accountKey];
+    if (!snaps[0].exists()) return null;
+    const prof = { accountKey, username: snaps[0].val(), id: snaps[1].val(), avatar: snaps[2].val() || null, bio: snaps[3].val() || "", mzk: snaps[4].val() || "", createdAt: Number(snaps[5].val()) || 0, mzkUid: snaps[6].val() || "", banner: safeBanner(snaps[7].val()), bannerColor: safeColor(snaps[8].val()), _at: Date.now() };
+    profileCache[accountKey] = prof;
+    if (prof.id) idToAccountKey[String(prof.id)] = accountKey;
+    return prof;
+  }).catch(() => { delete profileInflight[accountKey]; return null; });
+  profileInflight[accountKey] = p;
+  return p;
+}
+async function accountKeyForLoginId(loginId) {
+  const id = String(loginId || "");
+  if (!id) return null;
+  if (idToAccountKey[id]) return idToAccountKey[id];
+  try {
+    const snap = await idIndexRef.child(id).get();
+    if (snap.exists()) { idToAccountKey[id] = snap.val(); return snap.val(); }
+  } catch (e) {}
+  return null;
+}
+/* Does this chat sender's login id belong to a real account, and does the name on the message match it?
+   Used by chat to hide messages/images from forged senders. unknown=true means "couldn't check" (offline). */
+const senderChecks = {};
+async function verifySender(loginId, name) {
+  const id = String(loginId || "");
+  if (!/^\d{6}$/.test(id)) return { ok: false, nameMatches: false };
+  const hit = senderChecks[id];
+  if (hit && Date.now() - hit.at < (hit.ok ? 600000 : 30000)) return { ok: hit.ok, unknown: hit.unknown, nameMatches: hit.ok && String(hit.username || "").toLowerCase() === String(name || "").trim().toLowerCase() };
+  let rec = { at: Date.now(), ok: false, username: "", unknown: false };
+  try {
+    const key = await accountKeyForLoginId(id);
+    if (key) {
+      const prof = await fetchAccountProfile(key);
+      if (prof) { rec.ok = true; rec.username = prof.username; }
+    }
+  } catch (e) { rec.unknown = true; }
+  senderChecks[id] = rec;
+  return { ok: rec.ok, unknown: rec.unknown, nameMatches: rec.ok && String(rec.username).toLowerCase() === String(name || "").trim().toLowerCase() };
+}
+async function getAvatarByLoginId(loginId) {
+  const key = await accountKeyForLoginId(loginId);
+  if (!key) return null;
+  const prof = await fetchAccountProfile(key);
+  return prof ? prof.avatar : null;
+}
+
+/* ══════════════════════════════════════════════════════════
+   LAYOUT MODEL — Discord-style three-pane shell.
+   The rail (far left) switches between two MODES:
+     "chat" — sidebar lists chat rooms, main pane is the chat room,
+              members panel (right) shows who's online.
+     "dm"   — sidebar lists friends/groups (with Find + Blocked tabs in
+              its header), main pane is the open DM/group thread.
+   The mode lives as .mode-chat / .mode-dm on #appShell and CSS does the
+   rest. On phones the rail+sidebar become a slide-in drawer (.nav-open);
+   picking a room or conversation closes it.
+   ══════════════════════════════════════════════════════════ */
+const $viewRooms = document.getElementById("viewRooms");
+const $listPaneTitle = document.getElementById("listPaneTitle");
+const $friendsTitle = document.getElementById("friendsTitle");
+const $friendsBackBtn = document.getElementById("friendsBackBtn");
+const $navBackdrop = document.getElementById("navBackdrop");
+const $dmRailDot = document.getElementById("dmRailDot");
+
+let uiMode = "chat";            // "chat" | "dm"
+let dmSidebarView = "chats";    // chats | find | blocked (only used in dm mode)
+const DM_VIEW_TITLES = { chats: "Direct Messages", find: "Find People", blocked: "Blocked" };
+
+function isMobileLayout() { return window.matchMedia("(max-width: 720px)").matches; }
+
+function applyUiMode() {
+  const dm = uiMode === "dm";
+  $appShell.classList.toggle("mode-dm", dm);
+  $appShell.classList.toggle("mode-chat", !dm);
+  $tabChatRoom.classList.toggle("active", !dm);
+  $tabChats.classList.toggle("active", dm);
+  $tabFind.classList.toggle("active", dm && dmSidebarView === "find");
+  $tabBlocked.classList.toggle("active", dm && dmSidebarView === "blocked");
+  $viewRooms.classList.toggle("active", !dm);
+  // The sidebar always lists conversations in DM mode; Find / Blocked open in the main area.
+  const friendsOpen = dm && dmSidebarView !== "chats";
+  $viewChats.classList.toggle("active", dm);
+  $viewFind.classList.toggle("active", dm && dmSidebarView === "find");
+  $viewBlocked.classList.toggle("active", dm && dmSidebarView === "blocked");
+  $appShell.classList.toggle("friends-open", friendsOpen);
+  $listPaneTitle.textContent = dm ? "Direct Messages" : "Chat Rooms";
+  $friendsTitle.textContent = DM_VIEW_TITLES[dmSidebarView] || "";
+  // chat.js listens for this to start/stop the rooms list's live countdowns.
+  window.dispatchEvent(new CustomEvent("vus:mode", { detail: { mode: dm ? "dm" : "chat" } }));
+}
+
+// Lets chat.js (rooms rail) leave DM mode without reaching into this file.
+window.VUS_UI = { showChat() { if (uiMode !== "chat") closeDmSidebar(); } };
+
+function openDmSidebar(view) {
+  uiMode = "dm";
+  if (view) dmSidebarView = view;
+  applyUiMode();
+  if (isMobileLayout()) {
+    // conversations live in the drawer; Find / Blocked open in the main area
+    if (dmSidebarView === "chats") $appShell.classList.add("nav-open");
+    else $appShell.classList.remove("nav-open");
+  }
+}
+
+function showConversationsView() {
+  if (uiMode === "dm" && dmSidebarView !== "chats") { dmSidebarView = "chats"; applyUiMode(); }
+  $appShell.classList.remove("nav-open");
+}
+$friendsBackBtn.addEventListener("click", () => openDmSidebar("chats"));
+
+// Name kept for the existing call sites: "go back to the chat view".
+function closeDmSidebar() {
+  uiMode = "chat";
+  applyUiMode();
+}
+
+function setListView(view) {
+  if (view === "chatroom") { closeDmSidebar(); return; }
+  // "chats" | "find" | "blocked"
+  openDmSidebar(view);
+}
+
+$tabChatRoom.addEventListener("click", () => closeDmSidebar());
+$tabChats.addEventListener("click", () => openDmSidebar("chats"));
+$tabFind.addEventListener("click", () => openDmSidebar(uiMode === "dm" && dmSidebarView === "find" ? "chats" : "find"));
+$tabBlocked.addEventListener("click", () => openDmSidebar(uiMode === "dm" && dmSidebarView === "blocked" ? "chats" : "blocked"));
+$navBackdrop.addEventListener("click", () => $appShell.classList.remove("nav-open"));
+document.addEventListener("click", (e) => {
+  if (e.target.closest && e.target.closest(".mobile-menu-btn")) $appShell.classList.toggle("nav-open");
+});
+
+function updateFindRailDot(userData) {
+  const incoming = (userData && userData.friendRequestsIncoming) || {};
+  const visibleCount = Object.values(incoming).filter(r => !r.hidden).length;
+  $findRailDot.classList.toggle("show", visibleCount > 0);
+  updateDmBadge();
+}
+
+let pendingAvatarDataUrl = null;
+
+function renderProfileAvatarButton(avatarDataUrl) {
+  renderAvatarInto($profileAvatarPreviewBtn, currentSession.username, avatarDataUrl);
+  const camBadge = document.createElement("span");
+  camBadge.className = "avatar-cam-badge";
+  camBadge.textContent = "📷";
+  $profileAvatarPreviewBtn.appendChild(camBadge);
+}
+
+const $profileMzkLinked = document.getElementById("profileMzkLinked");
+const $profileMzkUnlinked = document.getElementById("profileMzkUnlinked");
+const $profileMzkMasked = document.getElementById("profileMzkMasked");
+const $profileMzkReveal = document.getElementById("profileMzkReveal");
+const $profileMzkSong = document.getElementById("profileMzkSong");
+const $profileMzkIdle = document.getElementById("profileMzkIdle");
+const $profileMzkUnlink = document.getElementById("profileMzkUnlink");
+const $profilePwToggle = document.getElementById("profilePwToggle");
+const $profilePwFields = document.getElementById("profilePwFields");
+const $profilePwSave = document.getElementById("profilePwSave");
+const $profilePwError = document.getElementById("profilePwError");
+const $profileLogoutBtn = document.getElementById("profileLogoutBtn");
+const $currentMzk = () => String((currentUserData && (currentUserData.mzkUid || currentUserData.mzk)) || "");
+let profileMzkSongUnsub = null, mzkRevealed = false, unlinkStep = 0, unlinkTimer = null;
+
+function paintMzkLinkState() {
+  const uid = String((currentUserData && currentUserData.mzkUid) || "");
+  const code = uid ? "" : String((currentUserData && currentUserData.mzk) || "");
+  const linked = !!(uid || code);
+  if (profileMzkSongUnsub) { profileMzkSongUnsub(); profileMzkSongUnsub = null; }
+  { const st = document.getElementById("mzkOpenStatus"); if (st) st.textContent = linked ? "Linked \u00B7 tap to manage" : "Not linked \u00B7 tap to set up"; }
+  $profileMzkLinked.style.display = linked ? "block" : "none";
+  $profileMzkUnlinked.style.display = linked ? "none" : "block";
+  if (!linked) return;
+  if (uid) {
+    $profileMzkMasked.textContent = "MZK account linked";
+    $profileMzkReveal.style.display = "none";
+  } else {
+    // the second half stays hidden unless the person asks to see it
+    $profileMzkReveal.style.display = "";
+    $profileMzkMasked.textContent = mzkRevealed ? code : code.slice(0, 5) + "-\u2022\u2022\u2022\u2022\u2022";
+    $profileMzkReveal.textContent = mzkRevealed ? "Hide" : "Show";
+  }
+  $profileMzkIdle.style.display = "";
+  const source = uid ? mzkSourceOf({ mzkUid: uid, id: currentSession && currentSession.id }) : code;
+  profileMzkSongUnsub = mzkSubscribe(source, song => {
+    if (!song) { $profileMzkSong.replaceChildren(); $profileMzkSong.style.display = "none"; $profileMzkIdle.style.display = ""; return; }
+    $profileMzkSong.replaceChildren(buildSongCard(song));
+    $profileMzkSong.style.display = "";
+    $profileMzkIdle.style.display = "none";
+  });
+}
+
+// "Sign in to MZK" block, added under the code box (built here so the HTML file doesn't need to change)
+(function buildMzkSignIn() {
+  const hint = h("div", { className: "profile-popover-fieldhint" }, "Or sign in to your MZK account once. It links automatically and keeps working without a code.");
+  const email = h("input", { type: "email", id: "profileMzkEmail", placeholder: "MZK email", autocomplete: "off", spellcheck: "false" });
+  const pw = h("input", { type: "password", id: "profileMzkPw", placeholder: "MZK password", autocomplete: "off" });
+  const err = h("div", { id: "profileMzkSignInError", className: "profile-popover-fieldhint", style: "color:#ef4444;min-height:12px" });
+  const btn = h("button", { type: "button", id: "profileMzkSignInBtn", style: "width:100%;margin-top:6px;padding:7px 10px;background:#22c55e;color:#06260f;border:none;border-radius:7px;font-size:12.5px;font-weight:600;cursor:pointer" }, "Sign in to MZK");
+  const go = async () => {
+    err.textContent = ""; err.style.color = "#ef4444";
+    btn.disabled = true; btn.textContent = "Linking…";
+    const r = await linkMzkAccount(email.value, pw.value);
+    btn.disabled = false; btn.textContent = "Sign in to MZK";
+    pw.value = "";
+    if (!r.ok) { err.textContent = r.error; return; }
+    email.value = "";
+    if (currentUserData) { currentUserData.mzkUid = r.uid; delete currentUserData.mzk; }
+    paintMzkLinkState();
+    window.dispatchEvent(new CustomEvent("vus:profile"));
+  };
+  btn.addEventListener("click", go);
+  pw.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); go(); } });
+  const wrap = h("div", { style: "margin-top:10px;padding-top:8px;border-top:1px solid #334155" }, hint, h("div", { style: "margin-top:6px;display:flex;flex-direction:column;gap:6px" }, email, pw), btn, err);
+  $profileMzkUnlinked.appendChild(wrap);
+})();
+function resetUnlinkButton() {
+  unlinkStep = 0; clearTimeout(unlinkTimer);
+  $profileMzkUnlink.textContent = "Unlink MZK";
+  $profileMzkUnlink.classList.remove("armed");
+}
+$profileMzkReveal.addEventListener("click", () => { mzkRevealed = !mzkRevealed; paintMzkLinkState(); });
+// Two confirmations before the link is removed; each one expires after 5 seconds.
+$profileMzkUnlink.addEventListener("click", async () => {
+  if (unlinkStep === 0) {
+    unlinkStep = 1; $profileMzkUnlink.textContent = "Are you sure? Click again"; $profileMzkUnlink.classList.add("armed");
+  } else if (unlinkStep === 1) {
+    unlinkStep = 2; $profileMzkUnlink.textContent = "Really unlink? Final click";
+  } else {
+    resetUnlinkButton();
+    $profileMzkUnlink.disabled = true;
+    const result = await clearMzkLink();
+    $profileMzkUnlink.disabled = false;
+    if (!result.ok) { $profilePopoverError.textContent = result.error; return; }
+    $profileMzkInput.value = "";
+    mzkRevealed = false;
+    if (currentUserData) { delete currentUserData.mzk; delete currentUserData.mzkUid; }   // don't wait for the live listener to redraw
+    paintMzkLinkState();
+    window.dispatchEvent(new CustomEvent("vus:profile"));
+    return;
+  }
+  clearTimeout(unlinkTimer);
+  unlinkTimer = setTimeout(resetUnlinkButton, 5000);
+});
+
+$profilePwToggle.addEventListener("click", () => {
+  const opening = $profilePwFields.style.display === "none";
+  $profilePwFields.style.display = opening ? "block" : "none";
+  $profilePwToggle.textContent = opening ? "Change password ▴" : "Change password ▾";
+});
+$profilePwSave.addEventListener("click", async () => {
+  const curPw = document.getElementById("settingsCurrentPw").value;
+  const newPw = document.getElementById("settingsNewPw").value;
+  const confirmPw = document.getElementById("settingsNewPwConfirm").value;
+  $profilePwError.style.color = "";
+  if (newPw !== confirmPw) { $profilePwError.textContent = "New passwords don't match."; return; }
+  $profilePwSave.disabled = true;
+  const result = await changePassword(curPw, newPw);
+  $profilePwSave.disabled = false;
+  if (!result.ok) { $profilePwError.textContent = result.error; return; }
+  $profilePwError.style.color = "#4ade80";
+  $profilePwError.textContent = "Password changed.";
+  ["settingsCurrentPw", "settingsNewPw", "settingsNewPwConfirm"].forEach(id => { document.getElementById(id).value = ""; });
+});
+$profileLogoutBtn.addEventListener("click", () => doLogout());
+
+function prepareAccountPane() {
+  profileLoaded = true;
+  showMzkSub(false);
+  pendingAvatarDataUrl = null;
+  pendingBanner = undefined; paintBannerEditor();
+  $profilePopoverError.textContent = "";
+  $profilePwError.textContent = "";
+  $profilePwFields.style.display = "none";
+  $profilePwToggle.textContent = "Change password ▾";
+  resetUnlinkButton();
+  mzkRevealed = false;
+  $profileNameInput.value = currentSession ? currentSession.username : "";
+  $profileBioInput.value = (currentUserData && currentUserData.bio) || "";
+  $profileMzkInput.value = "";
+  { const e1 = document.getElementById("profileMzkEmail"), p1 = document.getElementById("profileMzkPw"), r1 = document.getElementById("profileMzkSignInError"); if (e1) e1.value = ""; if (p1) p1.value = ""; if (r1) r1.textContent = ""; }
+  paintMzkLinkState();
+  updateBioCount();
+  renderProfileAvatarButton(currentUserData && currentUserData.avatar);
+  $profilePopover.classList.add("show");
+}
+
+/* ── ONE settings window: Profile & account + Chat, centered ── */
+const $settingsOverlay = document.getElementById("settingsOverlay");
+let settingsTab = "account";
+document.getElementById("paneAccount").appendChild($profilePopover);
+const $chatPanelEl = document.getElementById("globalClearPanel");
+if ($chatPanelEl) document.getElementById("paneChat").appendChild($chatPanelEl);
+
+function settingsIsOpen() { return $settingsOverlay.classList.contains("show"); }
+
+/* ── MZK lives in its own sub-menu so the profile Save button isn't mixed up with it ── */
+const $settingsModalEl = document.getElementById("settingsModal");
+const $mzkSubView = document.createElement("div");
+$mzkSubView.id = "mzkSubView";
+{
+  const head = h("div", { className: "sv-head" },
+    h("button", { type: "button", className: "sv-back", id: "mzkBackBtn" }, "\u2039 Back"),
+    h("span", { className: "sv-title" }, "MZK music link"));
+  const body = h("div", { className: "sv-body" });
+  const field = document.getElementById("profileMzkField");
+  const row = h("button", { type: "button", className: "cs-row mzk-open-row", id: "mzkOpenRow" },
+    h("span", { className: "cs-label" }, "\uD83C\uDFB5 MZK music link", h("small", { id: "mzkOpenStatus" }, "Show what you're playing on your profile")),
+    h("span", { className: "sv-chev" }, "\u203A"));
+  if (field && field.parentNode) field.parentNode.insertBefore(row, field);
+  const openMzk = h("button", { type: "button", className: "cs-action", id: "mzkOpenSiteBtn" }, "\uD83C\uDFB5 Open MZK in a new tab");
+  openMzk.addEventListener("click", () => openMzkInNewTab());
+  body.appendChild(h("div", { className: "profile-popover-fieldhint", style: "margin-bottom:6px" }, "Don't have a code yet? Open MZK, sign in, and get your link code under its Settings."));
+  body.appendChild(openMzk);
+  if (field) body.appendChild(field);
+  $mzkSubView.append(head, body);
+  document.getElementById("paneAccount").appendChild($mzkSubView);
+}
+// Opens MZK in a blank tab (about:blank), the same way the rest of the site opens apps.
+const MZK_URL = "https://raw.githubusercontent.com/Cra-Z-Gaming/VUS/refs/heads/main/MZK";
+async function openMzkInNewTab() {
+  const w = window.open("about:blank", "_blank");      // opened straight away so the browser allows it
+  if (!w) { alert("Your browser blocked the new tab. Allow pop-ups for this site and try again."); return; }
+  try { w.document.title = "MZK"; w.document.body.style.cssText = "background:#0f172a;color:#cbd5e1;font:16px system-ui;padding:24px"; w.document.body.textContent = "Loading MZK\u2026"; } catch (e) {}
+  try {
+    const res = await fetch(MZK_URL, { cache: "no-store" });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const html = await res.text();
+    w.document.open(); w.document.write(html); w.document.close();
+  } catch (e) {
+    try { w.location.href = MZK_URL; } catch (x) {}
+  }
+}
+function showMzkSub(on) {
+  $settingsModalEl.classList.toggle("sub-open", !!on);
+  if (on) { const b = document.getElementById("settingsBody"); if (b) b.scrollTop = 0; }
+}
+function mzkSubIsOpen() { return $settingsModalEl.classList.contains("sub-open"); }
+document.getElementById("mzkOpenRow").addEventListener("click", () => showMzkSub(true));
+document.getElementById("mzkBackBtn").addEventListener("click", () => showMzkSub(false));
+function showSettingsTab(tab) {
+  settingsTab = tab === "chat" ? "chat" : "account";
+  document.querySelectorAll("#settingsTabs .settings-tab").forEach(b => b.classList.toggle("active", b.dataset.tab === settingsTab));
+  document.getElementById("paneAccount").classList.toggle("active", settingsTab === "account");
+  document.getElementById("paneChat").classList.toggle("active", settingsTab === "chat");
+  if (settingsTab === "account") prepareAccountPane();
+  else { stopProfileMzkSong(); }
+  window.dispatchEvent(new CustomEvent("vus:settings-tab", { detail: { tab: settingsTab } }));
+}
+let settingsBaseline = "";
+function prefsState() { return window.VUS_CHAT && window.VUS_CHAT.getPrefsState ? window.VUS_CHAT.getPrefsState() : ""; }
+let profileLoaded = false;   // the profile fields hold the saved values (set when the Profile tab is prepared)
+function profileDirty() {
+  if (!currentSession || !profileLoaded) return false;
+  return $profileNameInput.value.trim() !== currentSession.username
+    || ($profileBioInput.value || "") !== ((currentUserData && currentUserData.bio) || "")
+    || pendingAvatarDataUrl !== null
+    || pendingBanner !== undefined
+    || $profileMzkInput.value.trim() !== "";
+}
+function settingsDirty() { return profileDirty() || prefsState() !== settingsBaseline; }
+function openSettings(tab) {
+  if (!currentSession) return;
+  hideLeaveConfirm();
+  $settingsOverlay.classList.add("show");
+  showSettingsTab(tab || settingsTab);
+  settingsBaseline = prefsState();
+}
+function closeSettings() {
+  if (!settingsIsOpen()) return;
+  hideLeaveConfirm();
+  showMzkSub(false);
+  profileLoaded = false;
+  $settingsOverlay.classList.remove("show");
+  $profilePopover.classList.remove("show");
+  stopProfileMzkSong();
+  resetUnlinkButton();
+  window.dispatchEvent(new CustomEvent("vus:settings-closed"));
+}
+const $settingsLeave = document.getElementById("settingsLeave");
+function hideLeaveConfirm() { $settingsLeave.classList.remove("show"); }
+function leaveConfirmOpen() { return $settingsLeave.classList.contains("show"); }
+// X, Esc, the Close button and clicking outside all come here: nothing unsaved closes straight away.
+function requestCloseSettings() {
+  if (!settingsIsOpen()) return;
+  if (!settingsDirty()) { closeSettings(); return; }
+  $settingsLeave.classList.add("show");
+}
+const $settingsSaveBtn = document.getElementById("settingsSaveBtn");
+let saveFlashTimer = null;
+async function saveSettings() {
+  $settingsSaveBtn.disabled = true;
+  let ok = true;
+  if (profileDirty()) ok = await saveProfileFields();
+  $settingsSaveBtn.disabled = false;
+  if (!ok) return false;
+  settingsBaseline = prefsState();
+  $settingsSaveBtn.textContent = "Saved \u2713";
+  clearTimeout(saveFlashTimer);
+  saveFlashTimer = setTimeout(() => { $settingsSaveBtn.textContent = "Save"; }, 1400);
+  return true;
+}
+function discardSettings() {
+  if (window.VUS_CHAT && window.VUS_CHAT.restorePrefsState) window.VUS_CHAT.restorePrefsState(settingsBaseline);
+  closeSettings();
+}
+function stopProfileMzkSong() { if (profileMzkSongUnsub) { profileMzkSongUnsub(); profileMzkSongUnsub = null; } }
+function openProfilePopover() { openSettings("account"); }
+document.querySelectorAll("#settingsTabs .settings-tab").forEach(b => b.addEventListener("click", () => showSettingsTab(b.dataset.tab)));
+document.getElementById("settingsX").addEventListener("click", requestCloseSettings);
+document.getElementById("settingsCloseBtn").addEventListener("click", requestCloseSettings);
+$settingsSaveBtn.addEventListener("click", saveSettings);
+document.getElementById("settingsLeaveSave").addEventListener("click", async () => { if (await saveSettings()) closeSettings(); else hideLeaveConfirm(); });
+document.getElementById("settingsLeaveDiscard").addEventListener("click", discardSettings);
+document.getElementById("settingsLeaveKeep").addEventListener("click", hideLeaveConfirm);
+// clicking the dimmed area (press and release both outside the window) asks/closes
+let settingsPressOnBackdrop = false;
+$settingsOverlay.addEventListener("mousedown", (e) => { settingsPressOnBackdrop = e.target === $settingsOverlay; });
+$settingsOverlay.addEventListener("click", (e) => { if (e.target === $settingsOverlay && settingsPressOnBackdrop) requestCloseSettings(); });
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape" || !settingsIsOpen()) return;
+  if (leaveConfirmOpen()) hideLeaveConfirm();
+  else if (mzkSubIsOpen()) showMzkSub(false);
+  else requestCloseSettings();
+});
+window.VUS_UI = Object.assign(window.VUS_UI || {}, { openSettings, closeSettings });
+function updateBioCount() { $profileBioCount.textContent = $profileBioInput.value.length + "/" + BIO_MAX_LENGTH; }
+$profileBioInput.addEventListener("input", updateBioCount);
+// shape the MZK code as it's typed or pasted: capitals only, dash after the 5th character
+$profileMzkInput.addEventListener("input", () => {
+  const raw = $profileMzkInput.value.toUpperCase().replace(/[^A-Z2-9]/g, "").slice(0, 10);
+  $profileMzkInput.value = raw.length > 5 ? raw.slice(0, 5) + "-" + raw.slice(5) : raw;
+});
+function closeProfilePopover() { closeSettings(); }
+
+$railAvatarBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  if (!currentSession) return;
+  if (settingsIsOpen() && settingsTab === "account") closeSettings();
+  else openSettings("account");
+});
+$profileAvatarPreviewBtn.addEventListener("click", () => $profileAvatarFileInput.click());
+$profileAvatarFileInput.addEventListener("change", async () => {
+  const file = $profileAvatarFileInput.files[0];
+  $profileAvatarFileInput.value = "";
+  if (!file) return;
+  if (!file.type.startsWith("image/")) { $profilePopoverError.textContent = "That file isn't an image."; return; }
+  try {
+    pendingAvatarDataUrl = await compressAvatarFile(file);
+    renderProfileAvatarButton(pendingAvatarDataUrl);
+  } catch (e) { $profilePopoverError.textContent = e.message || "Couldn't process that image."; }
+});
+/* ── Banner editor: colour picker, or a picture you move and zoom before it's saved ── */
+let pendingBanner;   // undefined = unchanged, otherwise { banner: dataUrl|null, color: "#rrggbb"|null }
+const BANNER_W = 900, BANNER_H = 300;
+function currentBannerState() {
+  if (pendingBanner !== undefined) return { banner: pendingBanner.banner || "", bannerColor: pendingBanner.color || "" };
+  return { banner: safeBanner(currentUserData && currentUserData.banner), bannerColor: safeColor(currentUserData && currentUserData.bannerColor) };
+}
+function paintBannerEditor() {
+  const st = currentBannerState();
+  paintBanner(document.getElementById("bannerPreview"), st);
+  const ci = document.getElementById("bannerColorInput");
+  if (ci) ci.value = st.bannerColor || "#16a34a";
+}
+function openBannerCropper(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Couldn't read that file."));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error("That file doesn't look like a valid image."));
+      img.onload = () => {
+        const ov = h("div", { className: "bn-overlay" });
+        const box = h("div", { className: "bn-box" });
+        const view = h("div", { className: "bn-view" });
+        const pic = h("img", { className: "bn-img", draggable: "false" }); pic.src = reader.result;
+        view.appendChild(pic);
+        const zoom = h("input", { type: "range", min: "1", max: "4", step: "0.01", value: "1", className: "bn-zoom" });
+        const cancel = h("button", { type: "button", className: "bn-cancel" }, "Cancel");
+        const apply = h("button", { type: "button", className: "bn-apply" }, "Use this banner");
+        box.append(h("div", { className: "bn-title" }, "Position your banner"), h("div", { className: "bn-hint" }, "Drag to move · slider or scroll to zoom"), view, h("div", { className: "bn-row" }, h("span", {}, "Zoom"), zoom), h("div", { className: "bn-row bn-btns" }, cancel, apply));
+        ov.appendChild(box); document.body.appendChild(ov);
+        let vw = 0, vh = 0, base = 1, z = 1, x = 0, y = 0;
+        const clamp = () => {
+          const s = base * z, w = img.naturalWidth * s, hh = img.naturalHeight * s;
+          x = Math.min(0, Math.max(vw - w, x)); y = Math.min(0, Math.max(vh - hh, y));
+        };
+        const place = () => {
+          clamp(); const s = base * z;
+          pic.style.width = img.naturalWidth * s + "px"; pic.style.height = img.naturalHeight * s + "px";
+          pic.style.left = x + "px"; pic.style.top = y + "px";
+        };
+        const setZoom = (nz, cx, cy) => {
+          nz = Math.min(4, Math.max(1, nz));
+          const k = nz / z; x = cx - (cx - x) * k; y = cy - (cy - y) * k; z = nz; zoom.value = String(z); place();
+        };
+        const measure = () => {
+          vw = view.clientWidth; vh = view.clientHeight;
+          base = Math.max(vw / img.naturalWidth, vh / img.naturalHeight);
+          x = (vw - img.naturalWidth * base) / 2; y = (vh - img.naturalHeight * base) / 2; z = 1; place();
+        };
+        measure();
+        zoom.addEventListener("input", () => setZoom(Number(zoom.value), vw / 2, vh / 2));
+        view.addEventListener("wheel", e => { e.preventDefault(); const r = view.getBoundingClientRect(); setZoom(z * (e.deltaY < 0 ? 1.1 : 1 / 1.1), e.clientX - r.left, e.clientY - r.top); }, { passive: false });
+        let drag = null;
+        view.addEventListener("pointerdown", e => { drag = { px: e.clientX, py: e.clientY, x, y }; try { view.setPointerCapture(e.pointerId); } catch (_) {} });
+        view.addEventListener("pointermove", e => { if (!drag) return; x = drag.x + e.clientX - drag.px; y = drag.y + e.clientY - drag.py; place(); });
+        const end = () => { drag = null; };
+        view.addEventListener("pointerup", end); view.addEventListener("pointercancel", end);
+        const close = () => { ov.remove(); };
+        cancel.addEventListener("click", () => { close(); resolve(null); });
+        apply.addEventListener("click", () => {
+          try {
+            const s = base * z;
+            const c = document.createElement("canvas"); c.width = BANNER_W; c.height = BANNER_H;
+            const ctx = c.getContext("2d");
+            ctx.fillStyle = "#0f172a"; ctx.fillRect(0, 0, BANNER_W, BANNER_H);
+            ctx.drawImage(img, -x / s, -y / s, vw / s, vh / s, 0, 0, BANNER_W, BANNER_H);
+            let q = 0.85, out = c.toDataURL("image/jpeg", q);
+            while (out.length > 280000 && q > 0.3) { q -= 0.1; out = c.toDataURL("image/jpeg", q); }
+            if (out.length > 280000) throw new Error("big");
+            close(); resolve(out);
+          } catch (e) { close(); reject(new Error("Couldn't process that image.")); }
+        });
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+document.getElementById("bannerColorInput").addEventListener("input", e => { pendingBanner = { banner: null, color: e.target.value }; paintBannerEditor(); });
+document.getElementById("bannerUploadBtn").addEventListener("click", () => document.getElementById("bannerFileInput").click());
+document.getElementById("bannerResetBtn").addEventListener("click", () => { pendingBanner = { banner: null, color: null }; paintBannerEditor(); });
+document.getElementById("bannerFileInput").addEventListener("change", async e => {
+  const file = e.target.files[0]; e.target.value = "";
+  if (!file) return;
+  if (!file.type.startsWith("image/")) { $profilePopoverError.textContent = "That file isn't an image."; return; }
+  try {
+    const url = await openBannerCropper(file);
+    if (url) { pendingBanner = { banner: url, color: null }; paintBannerEditor(); }
+  } catch (err) { $profilePopoverError.textContent = err.message || "Couldn't process that image."; }
+});
+async function saveProfileFields() {
+  $profilePopoverError.textContent = "";
+  if (pendingBanner !== undefined) {
+    try {
+      await usersRef.child(currentSession.accountKey).update({ banner: pendingBanner.banner || null, bannerColor: pendingBanner.color || null });
+      if (currentUserData) { currentUserData.banner = pendingBanner.banner || undefined; currentUserData.bannerColor = pendingBanner.color || undefined; }
+      delete profileCache[currentSession.accountKey];
+      pendingBanner = undefined;
+    } catch (e) { $profilePopoverError.textContent = friendlyDbError(e, "Couldn't save your banner"); return false; }
+  }
+  const result = await updateProfile($profileNameInput.value, pendingAvatarDataUrl !== null ? pendingAvatarDataUrl : undefined, $profileBioInput.value, ($currentMzk() ? undefined : $profileMzkInput.value));
+  if (!result.ok) { showMzkSub(false); $profilePopoverError.textContent = result.error; return false; }
+  pendingAvatarDataUrl = null;
+  $profileMzkInput.value = "";
+  $profileNameInput.value = currentSession ? currentSession.username : $profileNameInput.value;
+  refreshOwnRailAvatar();
+  window.dispatchEvent(new CustomEvent("vus:profile"));   // chat redraws the members list (picture, song)
+  return true;
+}
+$profileSaveBtn.addEventListener("click", saveSettings);
+
+function refreshOwnRailAvatar() {
+  if (!currentSession) return;
+  renderAvatarInto($railAvatarBtn, currentSession.username, currentUserData && currentUserData.avatar);
+}
+
+async function doLogout() {
+  const accountKey = currentSession && currentSession.accountKey;
+  releasePresence();
+  if (accountKey) await recordLastSeen(accountKey);
+  unwatchOwnAccount(accountKey);
+  unwatchMyGroupChats();
+  stopAllUnread();
+  unwatchGroupInfo();
+  clearPendingImage();
+  closeOpenChat();
+  closeModal();
+  closeProfilePopover();
+  stopProfileSong(); if (dmpSongUnsub) { dmpSongUnsub(); dmpSongUnsub = null; } mzkStopAll();
+  window.dispatchEvent(new CustomEvent("vus:logout"));
+  otherAvatarCache = {};
+  currentSession = null;
+  clearSession();
+  showAuthFlow();
+  setMode("login");
+  $loginIdentifier.value = "";
+  $loginPassword.value = "";
+}
+
+function renderOnlineList(list) {
+  latestPresenceAccountKeys = new Set(list.map(e => e.accountKey));
+  latestAfkKeys = new Set(list.filter(e => e.afk).map(e => e.accountKey));
+  document.querySelectorAll(".list-row-presence-dot[data-ak]").forEach(d => d.classList.toggle("afk", latestAfkKeys.has(d.dataset.ak)));
+  if (currentSession && currentUserData) { renderFriendsList(currentUserData); renderGroupsList(myGroupChats); }
+  $onlineCountText.textContent = list.length + " online";
+  $onlineList.innerHTML = "";
+  const sorted = [...list].sort((a, b) => (a.joinedAt || 0) - (b.joinedAt || 0));
+  if (sorted.length === 0) {
+    $onlineEmpty.style.display = "block";
+  } else {
+    $onlineEmpty.style.display = "none";
+    sorted.forEach(entry => {
+      const isMe = currentSession && entry.accountKey === currentSession.accountKey;
+      $onlineList.appendChild(buildPersonRow(entry.accountKey, entry.username, isMe ? "you" : "online", isMe ? [] : [dmButton(entry.accountKey, entry.username)]));
+    });
+  }
+  if (currentUserData) renderFriendsList(currentUserData);
+  if (openChatAccountKey) updateChatThreadHeaderStatus();
+}
+
+// One consistent person card for search results, requests, sent requests and blocked people.
+function buildPersonRow(accountKey, username, sub, actions) {
+  const info = h("div", { className: "pcard-info" },
+    h("div", { className: "pcard-name" }, username),
+    sub ? h("div", { className: "pcard-sub" }, sub) : null);
+  const row = h("div", { className: "pcard", title: "View profile", onclick: () => { if (accountKey) openAccountProfile(accountKey, username); } },
+    buildAvatarWithPresence(username, accountKey, false),
+    info,
+    h("div", { className: "pcard-actions", onclick: (e) => e.stopPropagation() }, ...(actions || [])));
+  return row;
+}
+function pbtn(label, kind, onclick) { return h("button", { className: "pbtn " + kind, onclick }, label); }
+function dmButton(accountKey, username) {
+  return pbtn("Message", "ghost", () => { openDmSidebar("chats"); openChatWith(accountKey, username); });
+}
+function toggleSectionFor(el, show) { const sec = el.closest && el.closest(".list-section"); if (sec) sec.style.display = show ? "" : "none"; }
+
+let lastSearchResults = [];
+function renderSearchResults(results) {
+  lastSearchResults = results;
+  $searchResults.innerHTML = "";
+  if (results.length === 0) { $searchEmpty.style.display = "block"; return; }
+  $searchEmpty.style.display = "none";
+
+  results.forEach(person => {
+    const status = getRelationshipStatus(person.accountKey);
+    const actions = [];
+    if (status === "self") actions.push(h("span", { className: "pill" }, "You"));
+    else {
+      actions.push(dmButton(person.accountKey, person.username));
+      if (status === "friends") actions.push(h("span", { className: "pill ok" }, "Friends"));
+      else if (status === "outgoing") actions.push(h("span", { className: "pill" }, "Pending"));
+      else if (status === "incoming") actions.push(h("span", { className: "pill" }, "Respond below"));
+      else {
+        const btn = pbtn("Add friend", "primary", async () => {
+          btn.disabled = true; btn.textContent = "Sending…";
+          const result = await sendFriendRequest(person.accountKey, person.username);
+          if (!result.ok) { showComposerNotice(result.error); btn.disabled = false; btn.textContent = "Add friend"; }
+        });
+        actions.push(btn);
+      }
+    }
+    $searchResults.appendChild(buildPersonRow(person.accountKey, person.username, "#" + person.id, actions));
+  });
+}
+
+function buildIncomingRequestRow(fromAccountKey, req) {
+  let acceptBtn, declineBtn, blockBtn;
+  function setRowButtonsDisabled(disabled) { acceptBtn.disabled = disabled; declineBtn.disabled = disabled; blockBtn.disabled = disabled; }
+
+  acceptBtn = h("button", { className: "pbtn primary", onclick: async () => {
+    setRowButtonsDisabled(true);
+    const result = await acceptFriendRequest(fromAccountKey, req.fromUsername);
+    if (!result.ok) { showComposerNotice(result.error); setRowButtonsDisabled(false); }
+  }}, "Accept");
+  declineBtn = h("button", { className: "pbtn ghost", onclick: async () => {
+    setRowButtonsDisabled(true);
+    const result = await declineFriendRequest(fromAccountKey);
+    if (!result.ok) { showComposerNotice(result.error); setRowButtonsDisabled(false); }
+  }}, "Decline");
+  blockBtn = h("button", { className: "pbtn danger", onclick: async () => {
+    setRowButtonsDisabled(true);
+    const result = await blockUser(fromAccountKey, req.fromUsername);
+    if (!result.ok) { showComposerNotice(result.error); setRowButtonsDisabled(false); }
+  }}, "Block");
+
+  return buildPersonRow(fromAccountKey, req.fromUsername, "wants to be friends", [acceptBtn, declineBtn, blockBtn]);
+}
+
+function renderIncomingRequests(userData) {
+  const incoming = (userData && userData.friendRequestsIncoming) || {};
+  const visible = Object.entries(incoming).filter(([, req]) => !req.hidden);
+  const hidden = Object.entries(incoming).filter(([, req]) => req.hidden);
+
+  $incomingRequestsList.innerHTML = "";
+  if (visible.length === 0) { $incomingRequestsEmpty.style.display = "block"; $incomingCountBadge.style.display = "none"; }
+  else { $incomingRequestsEmpty.style.display = "none"; $incomingCountBadge.style.display = "inline-block"; $incomingCountBadge.textContent = visible.length; }
+  visible.forEach(([fromAccountKey, req]) => $incomingRequestsList.appendChild(buildIncomingRequestRow(fromAccountKey, req)));
+
+  $hiddenRequestsList.innerHTML = "";
+  if (hidden.length === 0) { $hiddenRequestsEmpty.style.display = "block"; $hiddenCountBadge.style.display = "none"; }
+  else { $hiddenRequestsEmpty.style.display = "none"; $hiddenCountBadge.style.display = "inline-block"; $hiddenCountBadge.textContent = hidden.length; }
+  hidden.forEach(([fromAccountKey, req]) => $hiddenRequestsList.appendChild(buildIncomingRequestRow(fromAccountKey, req)));
+  toggleSectionFor($hiddenRequestsList, hidden.length > 0);
+}
+
+function renderOutgoingRequests(userData) {
+  const outgoing = (userData && userData.friendRequestsOutgoing) || {};
+  const entries = Object.entries(outgoing);
+  $outgoingRequestsList.innerHTML = "";
+  $outgoingRequestsEmpty.style.display = entries.length === 0 ? "block" : "none";
+
+  toggleSectionFor($outgoingRequestsList, entries.length > 0);
+  entries.forEach(([toAccountKey, req]) => {
+    const cancelBtn = pbtn("Cancel", "ghost", async () => {
+      cancelBtn.disabled = true;
+      const result = await cancelOutgoingRequest(toAccountKey);
+      if (!result.ok) { showComposerNotice(result.error); cancelBtn.disabled = false; }
+    });
+    $outgoingRequestsList.appendChild(buildPersonRow(toAccountKey, req.toUsername, "request pending", [cancelBtn]));
+  });
+}
+
+let latestPresenceAccountKeys = new Set();
+let latestAfkKeys = new Set();
+
+function buildAvatarWithPresence(username, accountKey, isGroup) {
+  const wrap = h("div", { className: "list-row-presence-wrap" });
+  const avatar = h("div", { className: "list-row-avatar" + (isGroup ? " group-avatar" : "") });
+  if (isGroup) {
+    avatar.textContent = "👥";
+  } else {
+    avatar.textContent = initialsFor(username);
+    fetchAndCacheAvatar(accountKey, (avatarUrl) => { if (avatarUrl) renderAvatarInto(avatar, username, avatarUrl); });
+  }
+  wrap.appendChild(avatar);
+  if (!isGroup) {
+    const dot = h("div", { className: "list-row-presence-dot" + (latestPresenceAccountKeys.has(accountKey) ? " online" : "") + (latestAfkKeys.has(accountKey) ? " afk" : "") });
+    dot.dataset.ak = accountKey;
+    wrap.appendChild(dot);
+  }
+  return wrap;
+}
+
+let myGroupChats = [];
+
+/* ══════════════════════════════════════════════════════════
+   UNREAD COUNTS
+   users/{me}/lastRead/{threadKey} = server timestamp (a DM's threadIdFor(...) or a group's id).
+   Unread = messages in that thread newer than lastRead and not sent by me, counted from the
+   last 100 messages of each thread. A thread with no lastRead yet is treated as read "as of now"
+   (so old history doesn't light up), EXCEPT a 0 marker, which a sender writes on a stranger's
+   account to say "this thread exists" -- that is how "Other chats" finds people you haven't added.
+   ══════════════════════════════════════════════════════════ */
+let unreadCounts = {}, lastReadMap = {}, localLastRead = {}, threadMsgs = {}, unreadRefs = {};
+let serverOffset = 0, unreadTimer = null, lastUnreadSig = "", otherChatKeys = [];
+const badgeText = n => (n > 99 ? "99+" : String(n));
+function serverNow() { return Date.now() + serverOffset; }
+
+function currentOpenThreadKey() {
+  if (openChatGcId) return openChatGcId;
+  if (openChatAccountKey && currentSession) return threadIdFor(currentSession.accountKey, openChatAccountKey);
+  return null;
+}
+
+const markReadTimers = {};
+function markLastRead(key) {
+  if (!currentSession || !key) return;
+  localLastRead[key] = serverNow();
+  clearTimeout(markReadTimers[key]);
+  const uid = currentSession.accountKey;
+  markReadTimers[key] = setTimeout(() => {
+    try { usersRef.child(uid).child("lastRead").child(key).set(firebase.database.ServerValue.TIMESTAMP).catch(() => {}); } catch (e) {}
+  }, 400);
+  scheduleUnread();
+}
+
+function ensureUnreadWatch(key, isGroup) {
+  if (!currentSession || !dmsRef || unreadRefs[key]) return;
+  if (lastReadMap[key] === undefined && localLastRead[key] === undefined) markLastRead(key);   // first time: start from "now"
+  const ref = (isGroup ? groupChatsRef.child(key) : dmsRef.child(key)).child("messages").limitToLast(100);
+  threadMsgs[key] = [];
+  ref.on("child_added", snap => {
+    const v = snap.val() || {};
+    threadMsgs[key].push({ ts: v.ts || 0, from: v.fromAccountKey, text: v.text ? String(v.text).slice(0, 80) : (v.imageData ? "\uD83D\uDCF7 Photo" : "") });
+    scheduleUnread();
+  });
+  unreadRefs[key] = ref;
+}
+
+function stopAllUnread() {
+  Object.values(unreadRefs).forEach(r => { try { r.off("child_added"); } catch (e) {} });
+  Object.values(markReadTimers).forEach(clearTimeout);
+  unreadRefs = {}; threadMsgs = {}; unreadCounts = {}; lastReadMap = {}; localLastRead = {}; otherChatKeys = []; lastUnreadSig = "";
+  clearTimeout(unreadTimer); unreadTimer = null;
+  updateDmBadge();
+}
+
+function scheduleUnread() {
+  if (unreadTimer) return;
+  unreadTimer = setTimeout(() => { unreadTimer = null; recomputeUnread(); }, 250);   // bursts of history collapse into one pass
+}
+
+function recomputeUnread() {
+  if (!currentSession) return;
+  const open = currentOpenThreadKey();
+  Object.keys(threadMsgs).forEach(k => {
+    if (k === open) { unreadCounts[k] = 0; return; }
+    const lr = Math.max(lastReadMap[k] || 0, localLastRead[k] || 0);
+    unreadCounts[k] = threadMsgs[k].filter(m => m.ts > lr && m.from !== currentSession.accountKey).length;
+  });
+  const sig = JSON.stringify(unreadCounts) + "|" + open + "|" + Object.keys(threadMsgs).map(k => lastActivity(k)).join(",");
+  if (sig !== lastUnreadSig) {
+    lastUnreadSig = sig;
+    if (currentUserData) renderFriendsList(currentUserData);
+    renderGroupsList(myGroupChats);
+    renderOtherChats();
+  }
+  updateDmBadge();
+}
+
+// One number for the DMs icon: unread in friends, groups and other chats, plus friend requests waiting.
+function updateDmBadge() {
+  if (!$dmRailDot) return;
+  const sum = Object.values(unreadCounts).reduce((a, n) => a + (n || 0), 0);
+  const reqs = Object.values((currentUserData && currentUserData.friendRequestsIncoming) || {}).filter(r => !r.hidden).length;
+  const total = currentSession ? sum + reqs : 0;
+  $dmRailDot.textContent = total > 0 ? badgeText(total) : "";
+  $dmRailDot.classList.toggle("show", total > 0);
+  $dmRailDot.title = total > 0 ? (sum + " unread" + (reqs ? ", " + reqs + " friend request" + (reqs === 1 ? "" : "s") : "")) : "";
+}
+
+// Threads with people who aren't friends: found through lastRead keys (see the note above).
+function deriveOtherChats(userData) {
+  const me = currentSession && currentSession.accountKey;
+  const friends = (userData && userData.friends) || {};
+  const blocked = (userData && userData.blockedUsers) || {};
+  const out = [];
+  Object.keys((userData && userData.lastRead) || {}).forEach(k => {
+    let other = null;
+    if (k.startsWith(me + "_")) other = k.slice(me.length + 1);
+    else if (k.endsWith("_" + me)) other = k.slice(0, k.length - me.length - 1);
+    if (!other || other === me || friends[other] || blocked[other]) return;
+    out.push({ key: k, other });
+  });
+  return out;
+}
+
+const otherChatNames = {};
+
+/* ── Pins: users/<me>/pinnedFriends|pinnedGroups/<key> = server timestamp (old `true` pins count as oldest).
+   Newest pin goes on TOP; unpin and re-pin and it jumps back to the top. Friends and groups share ONE Pinned list. ── */
+function pinField(isGroup) { return isGroup ? "pinnedGroups" : "pinnedFriends"; }
+function pinValue(isGroup, key) {
+  const v = ((currentUserData && currentUserData[pinField(isGroup)]) || {})[key];
+  if (v === undefined || v === null || v === false) return 0;
+  return v === true ? 1 : (Number(v) || 1);
+}
+function isPinned(isGroup, key) { return pinValue(isGroup, key) > 0; }
+async function setPinned(isGroup, key, on) {
+  if (!currentSession) return;
+  const ref = usersRef.child(currentSession.accountKey).child(pinField(isGroup)).child(key);
+  try { if (on) await ref.set(firebase.database.ServerValue.TIMESTAMP); else await ref.remove(); }
+  catch (e) { showComposerNotice(friendlyDbError(e, "Couldn't change the pin")); }
+}
+function lastActivity(key) { const a = threadMsgs[key]; let m = 0; if (a) a.forEach(x => { if (x.ts > m) m = x.ts; }); return m; }
+function lastPreview(key) {
+  const a = threadMsgs[key]; if (!a || !a.length) return null;
+  let last = a[0]; a.forEach(x => { if (x.ts >= last.ts) last = x; });
+  if (!last.text) return null;
+  return (last.from === (currentSession && currentSession.accountKey) ? "You: " : "") + last.text;
+}
+function shortTime(ts) {
+  if (!ts) return "";
+  const d = new Date(ts), now = new Date();
+  if (d.toDateString() === now.toDateString()) return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  const days = Math.floor((now - d) / 86400000);
+  if (days < 7) return d.toLocaleDateString([], { weekday: "short" });
+  return d.toLocaleDateString([], { month: "short", day: "numeric" });
+}
+
+/* Small popup menu used by every row's ⋮ button and the chat header. */
+let openDmMenuEl = null;
+function closeDmMenu() { if (openDmMenuEl) { openDmMenuEl.remove(); openDmMenuEl = null; } }
+document.addEventListener("click", closeDmMenu);
+window.addEventListener("resize", closeDmMenu);
+function showDmMenu(anchor, items) {
+  closeDmMenu();
+  const menu = h("div", { className: "dm-menu", role: "menu" });
+  items.filter(Boolean).forEach(it => {
+    if (it.sep) { menu.appendChild(h("div", { className: "dm-menu-sep" })); return; }
+    menu.appendChild(h("button", { type: "button", className: "dm-menu-item" + (it.danger ? " danger" : ""), onclick: (e) => { e.stopPropagation(); closeDmMenu(); it.run(); } }, h("span", { className: "dm-menu-ic" }, it.icon || ""), it.label));
+  });
+  document.body.appendChild(menu);
+  const r = anchor.getBoundingClientRect();
+  const mw = menu.offsetWidth, mh = menu.offsetHeight;
+  let left = Math.min(Math.max(8, r.right - mw), window.innerWidth - mw - 8);
+  let top = r.bottom + 4;
+  if (top + mh > window.innerHeight - 8) top = Math.max(8, r.top - mh - 4);
+  menu.style.left = left + "px"; menu.style.top = top + "px";
+  openDmMenuEl = menu;
+  menu.addEventListener("click", e => e.stopPropagation());
+}
+function confirmAction(title, text, label, run) {
+  $modalBox.innerHTML = "";
+  $modalBox.appendChild(h("h3", {}, title));
+  $modalBox.appendChild(h("div", { className: "modal-note" }, text));
+  const go = h("button", { className: "primary-btn", onclick: async () => { go.disabled = true; await run(); closeModal(); } }, label);
+  $modalBox.appendChild(h("div", { className: "modal-actions" }, h("button", { className: "plain-link", onclick: closeModal }, "Cancel"), go));
+  $modalOverlay.classList.add("show");
+}
+
+async function leaveGroupWithConfirm(gc) {
+  confirmAction("Leave " + gc.name + "?", "You'll stop getting its messages. Someone can invite you back.", "Leave group", async () => {
+    const res = await leaveGroupChat(gc.gcId);
+    if (!res.ok) showComposerNotice(res.error);
+  });
+}
+function removeFriendWithConfirm(key, name) {
+  confirmAction("Unfriend " + name + "?", "You'll no longer be friends. The chat moves to Other chats.", "Unfriend", async () => {
+    const res = await unfriend(key); if (!res.ok) showComposerNotice(res.error);
+  });
+}
+function blockWithConfirm(key, name) {
+  confirmAction("Block " + name + "?", "They won't be able to message you or send requests.", "Block", async () => {
+    const res = await blockUser(key, name); if (!res.ok) showComposerNotice(res.error);
+  });
+}
+async function hideOtherChat(threadKey, other) {
+  try { await usersRef.child(currentSession.accountKey).child("lastRead").child(threadKey).remove(); }
+  catch (e) { showComposerNotice(friendlyDbError(e, "Couldn't remove the chat")); return; }
+  if (openChatAccountKey === other) closeOpenChat();
+}
+async function addFriendFromChat(key, name) {
+  const res = await sendFriendRequest(key, name);
+  showComposerNotice(res.ok ? "Friend request sent." : res.error);
+}
+
+function friendMenuItems(key, name) {
+  return [
+    { icon: isPinned(false, key) ? "📌" : "📌", label: isPinned(false, key) ? "Unpin" : "Pin to top", run: () => setPinned(false, key, !isPinned(false, key)) },
+    { icon: "👤", label: "View profile", run: () => openAccountProfile(key, name) },
+    { sep: true },
+    { icon: "➖", label: "Unfriend", danger: true, run: () => removeFriendWithConfirm(key, name) },
+    { icon: "⛔", label: "Block", danger: true, run: () => blockWithConfirm(key, name) }
+  ];
+}
+function otherMenuItems(threadKey, key, name) {
+  const st = getRelationshipStatus(key);
+  return [
+    st === "outgoing" ? { icon: "⏳", label: "Request sent" , run: () => {} } : { icon: "➕", label: "Add friend", run: () => addFriendFromChat(key, name) },
+    { icon: "👤", label: "View profile", run: () => openAccountProfile(key, name) },
+    { sep: true },
+    { icon: "🗑️", label: "Remove chat", run: () => hideOtherChat(threadKey, key) },
+    { icon: "⛔", label: "Block", danger: true, run: () => blockWithConfirm(key, name) }
+  ];
+}
+function groupMenuItems(gc) {
+  return [
+    { icon: "📌", label: isPinned(true, gc.gcId) ? "Unpin" : "Pin to top", run: () => setPinned(true, gc.gcId, !isPinned(true, gc.gcId)) },
+    { icon: "⚙️", label: "Group info", run: () => openManageGroupModal(gc.gcId) },
+    { sep: true },
+    { icon: "🚪", label: "Leave group", danger: true, run: () => leaveGroupWithConfirm(gc) }
+  ];
+}
+
+function buildDmRow(o) {
+  const n = unreadCounts[o.threadKey] || 0;
+  const pv = lastPreview(o.threadKey);
+  const sub = o.subOverride || pv || o.sub;
+  const menuBtn = h("button", { className: "list-row-menu-btn", type: "button", title: "More", "aria-label": "More options", onclick: (e) => { e.stopPropagation(); showDmMenu(menuBtn, o.menu()); } }, "⋮");
+  const row = h("div", { className: "list-row dm-row" + (o.selected ? " selected" : "") + (n > 0 ? " has-unread" : "") + (o.pinned ? " pinned" : ""), onclick: o.open },
+    buildAvatarWithPresence(o.name, o.avatarKey, o.isGroup),
+    h("div", { className: "list-row-info" },
+      h("div", { className: "dm-row-top" },
+        h("div", { className: "list-row-name" }, o.name),
+        o.pinned ? h("span", { className: "dm-pin-ic", title: "Pinned" }, "📌") : null,
+        h("span", { className: "dm-row-time" }, shortTime(lastActivity(o.threadKey)))
+      ),
+      h("div", { className: "list-row-sub" }, sub)
+    ),
+    h("div", { className: "list-row-unread-badge" }, badgeText(n)),
+    menuBtn
+  );
+  row.dataset.threadKey = o.threadKey;
+  return row;
+}
+
+function groupOnlineCount(gc) { return Object.keys(gc.members || {}).filter(k => latestPresenceAccountKeys.has(k)).length; }
+function groupRowOpts(gc, pinned) {
+  const count = Object.keys(gc.members || {}).length, on = groupOnlineCount(gc);
+  return { name: gc.name, avatarKey: gc.gcId, isGroup: true, threadKey: gc.gcId, pinned, selected: openChatGcId === gc.gcId,
+    sub: count + " member" + (count === 1 ? "" : "s") + (on ? " · " + on + " online" : ""),
+    open: () => openGroupChat(gc.gcId), menu: () => groupMenuItems(gc) };
+}
+function friendRowOpts(key, data, pinned) {
+  const threadKey = threadIdFor(currentSession.accountKey, key);
+  return { name: data.username, avatarKey: key, isGroup: false, threadKey, pinned, selected: openChatAccountKey === key,
+    sub: latestPresenceAccountKeys.has(key) ? "online" : "offline",
+    open: () => openChatWith(key, data.username), menu: () => friendMenuItems(key, data.username) };
+}
+const byRecent = (ka, kb, na, nb) => (lastActivity(kb) - lastActivity(ka)) || String(na).localeCompare(String(nb));
+
+function renderPinned() {
+  const list = document.getElementById("pinnedList"), label = document.getElementById("pinnedLabel");
+  if (!list) return;
+  list.innerHTML = "";
+  const items = [];
+  myGroupChats.forEach(gc => { const v = pinValue(true, gc.gcId); if (v) items.push({ v, build: () => buildDmRow(groupRowOpts(gc, true)) }); });
+  const friends = (currentUserData && currentUserData.friends) || {};
+  Object.entries(friends).forEach(([k, d]) => { const v = pinValue(false, k); if (v) items.push({ v, build: () => buildDmRow(friendRowOpts(k, d, true)) }); });
+  items.sort((a, b) => b.v - a.v);   // newest pin first
+  label.style.display = items.length ? "block" : "none";
+  items.forEach(it => list.appendChild(it.build()));
+}
+
+function renderOtherChats() {
+  const list = document.getElementById("otherChatsList");
+  const label = document.getElementById("otherChatsLabel");
+  if (!list) return;
+  list.innerHTML = "";
+  label.style.display = otherChatKeys.length ? "block" : "none";
+  otherChatKeys.forEach(({ key, other }) => {
+    const name = otherChatNames[other];
+    if (!name) {
+      fetchAccountProfile(other).then(p => { if (p && !otherChatNames[other]) { otherChatNames[other] = p.username; renderOtherChats(); } });
+      return;
+    }
+    const st = getRelationshipStatus(other);
+    const row = buildDmRow({ name, avatarKey: other, isGroup: false, threadKey: key, pinned: false, selected: openChatAccountKey === other,
+      sub: st === "outgoing" ? "friend request sent" : "not friends", open: () => openChatWith(other, name), menu: () => otherMenuItems(key, other, name) });
+    const actions = h("div", { className: "list-row-actions-row show" });
+    if (st === "outgoing") actions.appendChild(h("span", { className: "unfriend-link muted" }, "Request sent"));
+    else actions.appendChild(h("span", { className: "unfriend-link add", onclick: (e) => { e.stopPropagation(); addFriendFromChat(other, name); } }, "Add friend"));
+    actions.appendChild(h("span", { className: "block-link", onclick: (e) => { e.stopPropagation(); blockWithConfirm(other, name); } }, "Block"));
+    actions.appendChild(h("span", { className: "block-link", onclick: (e) => { e.stopPropagation(); hideOtherChat(key, other); } }, "Remove"));
+    list.appendChild(h("div", {}, row, actions));
+  });
+}
+
+function renderGroupsList(groups) {
+  myGroupChats = groups;
+  $groupsList.innerHTML = "";
+  groups.forEach(gc => { ensureUnreadWatch(gc.gcId, true); if (openChatGcId === gc.gcId) currentGroupInfo = gc; });
+  const rest = groups.filter(gc => !isPinned(true, gc.gcId)).sort((a, b) => byRecent(a.gcId, b.gcId, a.name, b.name));
+  $groupsEmpty.style.display = groups.length === 0 ? "block" : "none";
+  rest.forEach(gc => $groupsList.appendChild(buildDmRow(groupRowOpts(gc, false))));
+  renderPinned();
+  if (openChatGcId && !groups.some(g => g.gcId === openChatGcId)) closeOpenChat();
+  updateOpenChatMenuState();
+}
+
+function renderFriendsList(userData) {
+  const friends = (userData && userData.friends) || {};
+  const entries = Object.entries(friends);
+  $friendsList.innerHTML = "";
+  $friendsEmpty.style.display = entries.length === 0 ? "block" : "none";
+  entries.forEach(([k]) => ensureUnreadWatch(threadIdFor(currentSession.accountKey, k), false));
+  const rest = entries.filter(([k]) => !isPinned(false, k)).sort((a, b) => byRecent(threadIdFor(currentSession.accountKey, a[0]), threadIdFor(currentSession.accountKey, b[0]), a[1].username, b[1].username));
+  rest.forEach(([k, d]) => $friendsList.appendChild(buildDmRow(friendRowOpts(k, d, false))));
+  const on = entries.filter(([k]) => latestPresenceAccountKeys.has(k)).length;
+  const fl = document.getElementById("friendsLabelCount"); if (fl) fl.textContent = on ? " · " + on + " online" : "";
+  renderPinned();
+  updateOpenChatMenuState();
+}
+
+function renderBlockedList(userData) {
+  const blocked = (userData && userData.blockedUsers) || {};
+  const entries = Object.entries(blocked);
+  $blockedList.innerHTML = "";
+  $blockedEmpty.style.display = entries.length === 0 ? "block" : "none";
+
+  entries.forEach(([blockedAccountKey, blockedData]) => {
+    const unblockBtn = pbtn("Unblock", "ghost", async () => {
+      unblockBtn.disabled = true;
+      const result = await unblockUser(blockedAccountKey);
+      if (!result.ok) { showComposerNotice(result.error); unblockBtn.disabled = false; }
+    });
+    $blockedList.appendChild(buildPersonRow(blockedAccountKey, blockedData.username, "blocked", [unblockBtn]));
+  });
+}
+
+function renderAllRelationshipUI(userData) {
+  lastReadMap = Object.assign({}, (userData && userData.lastRead) || {});
+  otherChatKeys = currentSession ? deriveOtherChats(userData) : [];
+  otherChatKeys.forEach(o => ensureUnreadWatch(o.key, false));
+  renderIncomingRequests(userData);
+  renderOutgoingRequests(userData);
+  renderFriendsList(userData);
+  renderBlockedList(userData);
+  renderOtherChats();
+  scheduleUnread();
+  updateFindRailDot(userData);
+  refreshOwnRailAvatar();
+  if ($listPaneYouName) { $listPaneYouName.textContent = currentSession ? currentSession.username : ""; }
+  if (lastSearchResults.length > 0) renderSearchResults(lastSearchResults);
+}
+
+function closeModal() { $modalOverlay.classList.remove("show"); $modalBox.innerHTML = ""; }
+$modalOverlay.addEventListener("click", (e) => { if (e.target === $modalOverlay) closeModal(); });
+
+function openNewGroupModal() {
+  $modalBox.innerHTML = "";
+  const input = h("input", { type: "text", placeholder: "Group name", maxlength: "40" });
+  const errorEl = h("div", { className: "modal-error" });
+  const createBtn = h("button", { className: "primary-btn", onclick: async () => {
+    createBtn.disabled = true;
+    const result = await createGroupChat(input.value);
+    if (!result.ok) { errorEl.textContent = result.error; createBtn.disabled = false; return; }
+    closeModal(); openGroupChat(result.gcId);
+  }}, "Create");
+  $modalBox.appendChild(h("h3", {}, "New group"));
+  $modalBox.appendChild(h("div", { className: "modal-note" }, "You can invite friends after creating it. Max " + GC_MAX_MEMBERS + " members."));
+  $modalBox.appendChild(input);
+  $modalBox.appendChild(errorEl);
+  $modalBox.appendChild(h("div", { className: "modal-actions" }, h("button", { className: "plain-link", onclick: closeModal }, "Cancel"), createBtn));
+  $modalOverlay.classList.add("show");
+  input.focus();
+}
+$newGroupBtn.addEventListener("click", openNewGroupModal);
+
+function openInviteModal(gcId) {
+  $modalBox.innerHTML = "";
+  $modalBox.appendChild(h("h3", {}, "Invite friends"));
+  const errorEl = h("div", { className: "modal-error" });
+  const friends = (currentUserData && currentUserData.friends) || {};
+  const gc = myGroupChats.find(g => g.gcId === gcId);
+  const existingMembers = (gc && gc.members) || {};
+  const invitable = Object.entries(friends).filter(([key]) => !existingMembers[key]);
+
+  if (invitable.length === 0) {
+    $modalBox.appendChild(h("div", { className: "list-empty" }, "All your friends are already in this group."));
+  } else {
+    invitable.forEach(([friendKey, friendData]) => {
+      const row = h("div", { className: "modal-invite-row" });
+      const nameEl = h("span", { style: "font-size:13px" }, friendData.username);
+      const btn = h("button", { className: "find-action-btn primary", onclick: async () => {
+        btn.disabled = true; btn.textContent = "Inviting…";
+        const result = await inviteToGroupChat(gcId, friendKey, friendData.username);
+        if (!result.ok) { errorEl.textContent = result.error; btn.disabled = false; btn.textContent = "Invite"; }
+        else row.remove();
+      }}, "Invite");
+      row.appendChild(nameEl);
+      row.appendChild(btn);
+      $modalBox.appendChild(row);
+    });
+  }
+  $modalBox.appendChild(errorEl);
+  $modalBox.appendChild(h("div", { className: "modal-actions" }, h("button", { className: "plain-link", onclick: closeModal }, "Done")));
+  $modalOverlay.classList.add("show");
+}
+
+function openManageGroupModal(gcId) {
+  const gc = myGroupChats.find(g => g.gcId === gcId) || currentGroupInfo;
+  if (!gc) return;
+  $modalBox.innerHTML = "";
+  const isOwner = currentSession && gc.ownerAccountKey === currentSession.accountKey;
+  $modalBox.appendChild(h("h3", {}, gc.name));
+  const errorEl = h("div", { className: "modal-error" });
+
+  if (isOwner) {
+    $modalBox.appendChild(h("div", { className: "list-new-group-row", style: "padding-left:0", onclick: () => openInviteModal(gcId) }, "+ Invite friends"));
+  }
+
+  $modalBox.appendChild(h("div", { className: "modal-note" }, "Members (" + Object.keys(gc.members || {}).length + "/" + GC_MAX_MEMBERS + ")"));
+
+  Object.entries(gc.members || {}).forEach(([memberKey, memberData]) => {
+    const isMe = currentSession && memberKey === currentSession.accountKey;
+    const ownerTag = memberKey === gc.ownerAccountKey ? " 👑" : "";
+    const actions = h("div", { style: "display:flex;gap:10px" });
+
+    if (isOwner && !isMe) {
+      const transferBtn = h("button", { className: "find-action-btn plain", onclick: async () => {
+        transferBtn.disabled = true;
+        const result = await transferGroupOwnership(gcId, memberKey);
+        if (!result.ok) { errorEl.textContent = result.error; transferBtn.disabled = false; }
+        else { closeModal(); openManageGroupModal(gcId); }
+      }}, "Make owner");
+      const kickBtn = h("button", { className: "find-action-btn danger", onclick: async () => {
+        kickBtn.disabled = true;
+        const result = await kickFromGroupChat(gcId, memberKey);
+        if (!result.ok) { errorEl.textContent = result.error; kickBtn.disabled = false; }
+      }}, "Kick");
+      actions.appendChild(transferBtn);
+      actions.appendChild(kickBtn);
+    }
+
+    $modalBox.appendChild(h("div", { className: "modal-invite-row" },
+      h("span", { style: "font-size:13px" }, memberData.username + ownerTag),
+      actions
+    ));
+  });
+
+  $modalBox.appendChild(errorEl);
+  const leaveBtn = h("button", { className: "danger-link", onclick: async () => {
+    if (isOwner && Object.keys(gc.members || {}).length > 1) {
+      errorEl.textContent = "Tip: use \"Make owner\" above first if you want to choose who takes over — otherwise it'll be random.";
+    }
+    leaveBtn.disabled = true;
+    const result = await leaveGroupChat(gcId);
+    if (!result.ok) { errorEl.textContent = result.error; leaveBtn.disabled = false; } else closeModal();
+  }}, isOwner ? "Transfer & leave" : "Leave group");
+  $modalBox.appendChild(h("div", { className: "modal-actions" }, h("button", { className: "plain-link", onclick: closeModal }, "Close"), leaveBtn));
+  $modalOverlay.classList.add("show");
+}
+$groupInfoBtn.addEventListener("click", () => { if (openChatGcId) openManageGroupModal(openChatGcId); });
+
+const $chatMenuBtn = document.getElementById("chatMenuBtn");
+const $chatNotFriendBar = document.getElementById("chatNotFriendBar");
+function openChatMenuItems() {
+  if (openChatGcId) {
+    const gc = myGroupChats.find(g => g.gcId === openChatGcId);
+    return gc ? [...groupMenuItems(gc), { sep: true }, { icon: "\u2190", label: "Close chat", run: closeOpenChat }] : [];
+  }
+  if (openChatAccountKey) {
+    const key = openChatAccountKey, name = openChatUsername || "this user";
+    const friends = (currentUserData && currentUserData.friends) || {};
+    const base = friends[key] ? friendMenuItems(key, name) : otherMenuItems(threadIdFor(currentSession.accountKey, key), key, name);
+    return [...base, { sep: true }, { icon: "\u2190", label: "Close chat", run: closeOpenChat }];
+  }
+  return [];
+}
+$chatMenuBtn.addEventListener("click", (e) => { e.stopPropagation(); showDmMenu($chatMenuBtn, openChatMenuItems()); });
+function updateOpenChatMenuState() {
+  if (!$chatNotFriendBar) return;
+  const show = !!openChatAccountKey && !openChatGcId && !!currentUserData && !((currentUserData.friends || {})[openChatAccountKey]);
+  $chatNotFriendBar.style.display = show ? "flex" : "none";
+  if (!show) return;
+  const st = getRelationshipStatus(openChatAccountKey);
+  $chatNotFriendBar.replaceChildren(
+    h("span", { className: "nf-text" }, "You're not friends with " + (openChatUsername || "this user") + "."),
+    st === "outgoing" ? h("span", { className: "nf-sent" }, "Request sent") :
+      h("button", { type: "button", className: "nf-btn", onclick: () => addFriendFromChat(openChatAccountKey, openChatUsername) }, "Add friend"),
+    h("button", { type: "button", className: "nf-btn ghost", onclick: () => blockWithConfirm(openChatAccountKey, openChatUsername) }, "Block")
+  );
+}
+$chatThreadHeaderName.addEventListener("click", () => { if (openChatAccountKey) openAccountProfile(openChatAccountKey, openChatUsername); else if (openChatGcId) openManageGroupModal(openChatGcId); });
+
+$searchBtn.addEventListener("click", async () => {
+  const query = $searchInput.value;
+  $searchBtn.disabled = true;
+  try { renderSearchResults(await performSearch(query)); }
+  catch (e) { showComposerNotice("Search failed — try again."); }
+  finally { $searchBtn.disabled = false; }
+});
+$searchInput.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); $searchBtn.click(); } });
+
+function showLoggedInState(session) {
+  document.body.classList.add("app-mode");
+  $listPaneYouName.textContent = session.username;
+  $listPaneYouId.textContent = "#" + session.id;
+  refreshOwnRailAvatar();
+}
+function showAuthFlow() {
+  document.body.classList.remove("app-mode");
+  $appShell.classList.remove("nav-open", "thread-open");
+  $authFlow.style.display = "block";
+}
+
+function formatBanCountdown(ms) {
+  const totalSecs = Math.max(0, Math.floor(ms / 1000));
+  const days = Math.floor(totalSecs / 86400);
+  const hours = Math.floor((totalSecs % 86400) / 3600);
+  const mins = Math.floor((totalSecs % 3600) / 60);
+  const secs = totalSecs % 60;
+  const pad = n => String(n).padStart(2, "0");
+  if (days > 0) return days + "d " + pad(hours) + ":" + pad(mins) + ":" + pad(secs);
+  return pad(hours) + ":" + pad(mins) + ":" + pad(secs);
+}
+
+$newIdContinueBtn.addEventListener("click", () => {
+  $newIdReveal.style.display = "none";
+  $authForm.style.display = "flex";
+  $authForm.style.flexDirection = "column";
+  $authForm.style.gap = "12px";
+  setMode("login");
+});
+
+$authForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  $authError.textContent = "";
+  $authSuccess.style.display = "none";
+  $authSubmitBtn.disabled = true;
+  try {
+    if (mode === "login") {
+      const result = await login($loginIdentifier.value, $loginPassword.value);
+      if (!result.ok) { $authError.textContent = result.error; return; }
+      saveSession(result.accountKey, result.username, result.id);
+      currentSession = result;
+      claimOwnership(result.accountKey);
+      claimPresence(result.accountKey, result.username);
+      watchOwnAccount(result.accountKey, renderAllRelationshipUI);
+      watchMyGroupChats(renderGroupsList);
+      showLoggedInState(result);
+      closeDmSidebar();
+      announceSession(result);
+    } else {
+      const username = $signupUsername.value, password = $signupPassword.value, confirm = $signupPasswordConfirm.value;
+      if (password !== confirm) { $authError.textContent = "Passwords don't match."; return; }
+      const result = await createAccount(username, password);
+      if (!result.ok) { $authError.textContent = result.error; return; }
+      $authForm.style.display = "none";
+      $revealedId.textContent = result.id;
+      $newIdReveal.style.display = "block";
+      $loginIdentifier.value = result.username;
+      $loginPassword.value = "";
+      $signupUsername.value = ""; $signupPassword.value = ""; $signupPasswordConfirm.value = "";
+    }
+  } catch (e) {
+    console.error("Auth error:", e);
+    $authError.textContent = "Error: " + (e && e.message ? e.message : String(e));
+  } finally {
+    $authSubmitBtn.disabled = false;
+  }
+});
+
+/* ══════════════════════════════════════════════════════════
+   DM CHAT THREAD UI
+   ══════════════════════════════════════════════════════════ */
+let openChatAccountKey = null;
+let openChatUsername = null;
+let openChatGcId = null;
+let openThreadId = null;
+let chatMessageCount = 0;
+let lastRenderedDateKey = null;
+let replyingTo = null;
+let editingMessageId = null;
+let threadReadsState = {};
+
+function updateChatThreadHeaderStatus() {
+  setTimeout(renderDmProfile, 0);
+  setTimeout(updateOpenChatMenuState, 0);
+  if (openChatGcId) {
+    const count = currentGroupInfo ? Object.keys(currentGroupInfo.members || {}).length : 0;
+    const on = currentGroupInfo ? groupOnlineCount(currentGroupInfo) : 0;
+    $chatThreadHeaderStatus.textContent = count + " member" + (count === 1 ? "" : "s") + (on ? " \u00b7 " + on + " online" : "");
+    $chatThreadHeaderStatus.classList.remove("online");
+    return;
+  }
+  if (!openChatAccountKey) return;
+  const isOnline = latestPresenceAccountKeys.has(openChatAccountKey);
+  if (isOnline) {
+    $chatThreadHeaderStatus.textContent = "online";
+    $chatThreadHeaderStatus.classList.add("online");
+  } else {
+    const otherLastSeen = otherUserLastSeenCache[openChatAccountKey];
+    $chatThreadHeaderStatus.textContent = formatLastSeen(otherLastSeen).toLowerCase();
+    $chatThreadHeaderStatus.classList.remove("online");
+  }
+  $chatThreadPresenceBadge.classList.toggle("online", isOnline);
+  $chatThreadPresenceBadge.classList.toggle("afk", isOnline && latestAfkKeys.has(openChatAccountKey));
+}
+
+let otherUserLastSeenCache = {};
+
+/* ── Right-hand profile card in DM mode (who you're talking to, or the group's members) ── */
+const $dmProfileBody = document.getElementById("dmProfileBody");
+const dmProfileIdCache = {};
+
+let dmpSongUnsub = null, dmpRenderId = 0;
+function renderDmProfile() {
+  if (!$dmProfileBody) return;
+  const myRender = ++dmpRenderId;
+  if (dmpSongUnsub) { dmpSongUnsub(); dmpSongUnsub = null; }
+  const open = !!(openChatAccountKey || openChatGcId);
+  $appShell.classList.toggle("has-profile", open);
+  if (!open) { $dmProfileBody.replaceChildren(); return; }
+  const card = h("div", { className: "dmp" });
+  const dmpBanner = h("div", { className: "dmp-banner" });
+  card.appendChild(dmpBanner);
+  const avWrap = h("div", { className: "dmp-av" });
+  const av = h("div", { className: "list-row-avatar dmp-avatar" });
+  avWrap.appendChild(av);
+  const info = h("div", { className: "dmp-card" });
+  if (openChatGcId) {
+    av.textContent = "👥"; av.classList.add("group-avatar");
+    const gc = myGroupChats.find(g => g.gcId === openChatGcId) || currentGroupInfo;
+    const members = (currentGroupInfo && currentGroupInfo.members) || {};
+    info.appendChild(h("div", { className: "dmp-name" }, (gc && gc.name) || "Group"));
+    info.appendChild(h("div", { className: "dmp-sub" }, Object.keys(members).length + " members"));
+    info.appendChild(h("div", { className: "dmp-h" }, "Members"));
+    Object.keys(members).forEach(key => {
+      const m = members[key] || {};
+      const online = latestPresenceAccountKeys.has(key);
+      info.appendChild(h("div", { className: "dmp-member" },
+        h("span", { className: "dmp-sd" + (online ? " on" : "") }),
+        h("span", {}, (key === currentSession.accountKey ? currentSession.username + " (you)" : (m.username || "Member")))
+      ));
+    });
+    info.appendChild(h("button", { className: "dmp-btn", onclick: () => openManageGroupModal(openChatGcId) }, "Manage group"));
+  } else {
+    const key = openChatAccountKey, name = openChatUsername || "";
+    renderAvatarInto(av, name, null);
+    fetchAndCacheAvatar(key, (url) => { if (url) renderAvatarInto(av, name, url); });
+    const online = latestPresenceAccountKeys.has(key);
+    info.appendChild(h("div", { className: "dmp-name" }, name));
+    const idLine = h("div", { className: "dmp-sub" }, dmProfileIdCache[key] ? "#" + dmProfileIdCache[key] : "");
+    info.appendChild(idLine);
+    if (!dmProfileIdCache[key]) {
+      usersRef.child(key).child("id").get().then(snap => {
+        if (!snap.exists()) return;
+        dmProfileIdCache[key] = snap.val();
+        if (openChatAccountKey === key) idLine.textContent = "#" + snap.val();
+      }).catch(() => {});
+    }
+    info.appendChild(h("div", { className: "dmp-status" },
+      h("span", { className: "dmp-sd" + (online ? " on" : "") }),
+      h("span", {}, online ? "Online" : formatLastSeen(otherUserLastSeenCache[key]))));
+    const fr = currentUserData && currentUserData.friends && currentUserData.friends[key];
+    if (fr && fr.since) {
+      info.appendChild(h("div", { className: "dmp-h" }, "Friends since"));
+      info.appendChild(h("div", { className: "dmp-t" }, new Date(fr.since).toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" })));
+    }
+    const rolesBox = h("div", { className: "pc-roles" });
+    const bioBox = h("div", {});
+    const songBox = h("div", { className: "song-wrap" });
+    info.appendChild(rolesBox);
+    info.appendChild(bioBox);
+    info.appendChild(songBox);
+    fetchAccountProfile(key).then(prof => {
+      if (!prof || openChatAccountKey !== key || myRender !== dmpRenderId) return;
+      fillRoles(rolesBox, prof.id);
+      paintBanner(dmpBanner, prof);
+      if (prof.bio) {
+        bioBox.appendChild(h("div", { className: "dmp-h" }, "About me"));
+        bioBox.appendChild(h("div", { className: "dmp-t dmp-bio" }, prof.bio));
+      }
+      if (mzkSourceOf(prof)) dmpSongUnsub = mountSong(songBox, mzkSourceOf(prof));
+    });
+    info.appendChild(h("div", { className: "dmp-actions" },
+      h("button", { className: "dmp-btn", onclick: async () => {
+        const r = await unfriend(key); if (!r.ok) showComposerNotice(r.error);
+      } }, "Unfriend"),
+      h("button", { className: "dmp-btn danger", onclick: async () => {
+        const r = await blockUser(key, name); if (!r.ok) showComposerNotice(r.error);
+      } }, "Block")
+    ));
+  }
+  card.appendChild(avWrap);
+  card.appendChild(info);
+  $dmProfileBody.replaceChildren(card);
+}
+
+async function fetchOtherLastSeen(accountKey) {
+  try {
+    const snap = await usersRef.child(accountKey).child("lastSeen").get();
+    otherUserLastSeenCache[accountKey] = snap.val() || null;
+    if (openChatAccountKey === accountKey) updateChatThreadHeaderStatus();
+  } catch (e) {}
+}
+
+function maybeInsertDateSeparator(ts) {
+  if (!ts) return;
+  const dayKey = new Date(ts).toDateString();
+  if (dayKey === lastRenderedDateKey) return;
+  lastRenderedDateKey = dayKey;
+  $chatMessages.appendChild(h("div", { className: "chat-date-sep" }, formatDateSeparator(ts).toLowerCase()));
+}
+
+function findRenderedMessageEl(messageId) {
+  return $chatMessages.querySelector('[data-msg-id="' + CSS.escape(messageId) + '"]');
+}
+
+function scopeRefForOpenChat() {
+  return openChatGcId ? groupChatsRef.child(openChatGcId) : dmsRef.child(openThreadId);
+}
+
+function renderReactions(msg, msgEl) {
+  const existing = msgEl.querySelector(".chat-msg-reactions");
+  if (existing) existing.remove();
+  const reactions = msg.reactions || {};
+  const entries = Object.entries(reactions).filter(([, users]) => users && Object.keys(users).length > 0);
+  if (entries.length === 0) return;
+
+  const wrap = h("div", { className: "chat-msg-reactions" });
+  entries.forEach(([emoji, users]) => {
+    const count = Object.keys(users).length;
+    const isMine = currentSession && users[currentSession.accountKey];
+    wrap.appendChild(h("div", { className: "reaction-pill" + (isMine ? " mine-reaction" : ""), onclick: () => {
+      toggleReaction(scopeRefForOpenChat(), msg.id, emoji);
+    }}, emoji + " " + count));
+  });
+  const bubbleRow = msgEl.querySelector(".chat-msg-bubble-row");
+  bubbleRow.insertAdjacentElement("afterend", wrap);
+}
+
+function openReactionPicker(msg, anchorBtn) {
+  document.querySelectorAll(".reaction-picker-popover.show").forEach(p => p.classList.remove("show"));
+  let popover = anchorBtn.nextElementSibling;
+  if (!popover || !popover.classList.contains("reaction-picker-popover")) {
+    popover = h("div", { className: "reaction-picker-popover" });
+    ["👍","❤️","😂","😮","😢","🔥"].forEach(emoji => {
+      popover.appendChild(h("button", { onclick: () => {
+        toggleReaction(scopeRefForOpenChat(), msg.id, emoji);
+        popover.classList.remove("show");
+      }}, emoji));
+    });
+    anchorBtn.insertAdjacentElement("afterend", popover);
+  }
+  popover.classList.toggle("show");
+  const closeOnOutside = (e) => {
+    if (!popover.contains(e.target) && e.target !== anchorBtn) {
+      popover.classList.remove("show");
+      document.removeEventListener("click", closeOnOutside);
+    }
+  };
+  setTimeout(() => document.addEventListener("click", closeOnOutside), 0);
+}
+
+function startReply(msg) {
+  const fromLabel = msg.fromAccountKey === currentSession.accountKey ? "You" : (msg.fromUsername || openChatUsername || "them");
+  const previewText = msg.deleted ? "[deleted message]" : (msg.imageData ? "📷 Image" : (msg.text || ""));
+  replyingTo = { id: msg.id, text: previewText, fromLabel: fromLabel };
+  $replyPreviewText.innerHTML = `<b>${esc(fromLabel)}:</b> ${esc(previewText).slice(0, 80)}`;
+  $replyPreviewBar.style.display = "flex";
+  cancelEditing();
+  $chatMsgInput.focus();
+}
+function cancelReply() { replyingTo = null; $replyPreviewBar.style.display = "none"; }
+$cancelReplyBtn.addEventListener("click", cancelReply);
+
+function startEditing(msg) {
+  editingMessageId = msg.id;
+  $chatMsgInput.value = msg.text || "";
+  autosizeChatInput();
+  $editingBar.style.display = "flex";
+  cancelReply();
+  $chatMsgInput.focus();
+}
+function cancelEditing() { editingMessageId = null; $editingBar.style.display = "none"; }
+$cancelEditBtn.addEventListener("click", () => { cancelEditing(); $chatMsgInput.value = ""; autosizeChatInput(); });
+
+function renderChatMessage(msg) {
+  maybeInsertDateSeparator(msg.ts);
+  const mine = msg.fromAccountKey === currentSession.accountKey;
+  const el = h("div", { className: "chat-msg has-av " + (mine ? "mine" : "theirs") });
+  el.dataset.msgId = msg.id;
+
+  const authorName = mine ? currentSession.username : (msg.fromUsername || openChatUsername || "");
+  const senderKey = msg.fromAccountKey || (mine ? currentSession.accountKey : openChatAccountKey);
+  const openSender = () => { if (senderKey) openAccountProfile(senderKey, authorName); };
+  const avEl = h("div", { className: "msg-av", title: "View profile", onclick: openSender });
+  renderAvatarInto(avEl, authorName, null);
+  if (senderKey) fetchAndCacheAvatar(senderKey, (url) => { if (url) renderAvatarInto(avEl, authorName, url); });
+  el.appendChild(avEl);
+  if (authorName) el.appendChild(h("div", { className: "chat-msg-author", onclick: openSender, title: "View profile" }, authorName));
+
+  if (msg.replyTo) {
+    const label = msg.replyToLabel || "them";
+    const snippet = msg.replyToSnippet || "message";
+    const preview = h("div", { className: "chat-msg-reply-preview", onclick: () => {
+      const repliedEl = findRenderedMessageEl(msg.replyTo);
+      if (repliedEl) repliedEl.scrollIntoView({ behavior: "smooth", block: "center" });
+      else showComposerNotice("Original message isn't loaded — scroll up to find it.");
+    }},
+      h("b", {}, label + ": "), snippet
+    );
+    el.appendChild(preview);
+  }
+
+  const bubble = h("div", { className: "chat-msg-bubble" });
+  if (msg.deleted) {
+    bubble.style.fontStyle = "italic";
+    bubble.style.opacity = "0.6";
+    bubble.textContent = "This message was deleted";
+  } else if (msg.imageData) {
+    const img = h("img", { className: "chat-msg-image", alt: "Image", onclick: () => openImageLightbox(msg.imageData) });
+    img.src = msg.imageData;
+    bubble.appendChild(img);
+    if (msg.text) bubble.appendChild(h("div", { style: "margin-top:6px;white-space:pre-wrap", html: linkify(esc(msg.text)) }));
+  } else {
+    bubble.innerHTML = linkify(esc(msg.text || ""));
+  }
+
+  const hoverActions = h("div", { className: "msg-hover-actions" });
+  const reactBtn = h("button", { title: "React", onclick: () => openReactionPicker(msg, reactBtn) }, "😊");
+  const replyBtn = h("button", { title: "Reply", onclick: () => startReply(msg) }, "↩");
+  hoverActions.appendChild(reactBtn);
+  hoverActions.appendChild(replyBtn);
+  if (mine && !msg.deleted && !msg.imageData) {
+    hoverActions.appendChild(h("button", { title: "Edit", onclick: () => startEditing(msg) }, "✎"));
+  }
+  if (mine && !msg.deleted) {
+    hoverActions.appendChild(h("button", { title: "Delete", onclick: () => {
+      const fn = openChatGcId ? deleteGroupMessage(openChatGcId, msg.id) : deleteDirectMessage(openThreadId, msg.id);
+      Promise.resolve(fn).then(res => { if (res && !res.ok) showComposerNotice(res.error); });
+    }}, "🗑") );
+  }
+
+  const bubbleRow = h("div", { className: "chat-msg-bubble-row" }, bubble, hoverActions);
+  el.appendChild(bubbleRow);
+
+  const metaBits = [formatTimeShort(msg.ts)];
+  if (msg.editedAt) metaBits.push(h("span", { className: "chat-msg-edited-tag" }, "(edited)"));
+  const meta = h("div", { className: "chat-msg-meta" });
+  meta.appendChild(document.createTextNode(metaBits[0]));
+  if (metaBits[1]) { meta.appendChild(document.createTextNode(" ")); meta.appendChild(metaBits[1]); }
+  el.appendChild(meta);
+
+  $chatMessages.appendChild(el);
+  renderReactions(msg, el);
+  chatMessageCount++;
+
+  const nearBottom = $chatMessages.scrollHeight - $chatMessages.scrollTop - $chatMessages.clientHeight < 200;
+  if (nearBottom || mine) {
+    requestAnimationFrame(() => { $chatMessages.scrollTop = $chatMessages.scrollHeight; });
+  }
+
+  if (!mine && (openChatGcId || openThreadId)) markThreadRead(openChatGcId || openThreadId, msg.id, !!openChatGcId);
+}
+
+function updateRenderedMessage(msg) {
+  const el = findRenderedMessageEl(msg.id);
+  if (!el) return;
+  const bubble = el.querySelector(".chat-msg-bubble");
+  if (msg.deleted) {
+    bubble.style.fontStyle = "italic"; bubble.style.opacity = "0.6";
+    bubble.textContent = "This message was deleted";
+    const editBtn = el.querySelector('button[title="Edit"]');
+    if (editBtn) editBtn.remove();
+  } else if (!msg.imageData) {
+    bubble.innerHTML = linkify(esc(msg.text || ""));
+  }
+  if (msg.editedAt && !el.querySelector(".chat-msg-edited-tag")) {
+    const meta = el.querySelector(".chat-msg-meta:last-child");
+    if (meta) { meta.appendChild(document.createTextNode(" ")); meta.appendChild(h("span", { className: "chat-msg-edited-tag" }, "(edited)")); }
+  }
+  renderReactions(msg, el);
+}
+
+function renderTypingIndicator(activeUsernames) {
+  if (activeUsernames.length === 0) { $typingIndicatorBar.textContent = ""; return; }
+  if (activeUsernames.length === 1) $typingIndicatorBar.textContent = activeUsernames[0].toLowerCase() + " is typing···";
+  else $typingIndicatorBar.textContent = activeUsernames.join(", ").toLowerCase() + " are typing···";
+}
+
+function openChatWith(accountKey, username) {
+  showConversationsView();
+  unwatchGroupInfo();
+  clearPendingImage();
+  cancelReply();
+  cancelEditing();
+  openChatAccountKey = accountKey;
+  openChatUsername = username;
+  openChatGcId = null;
+  chatMessageCount = 0;
+  lastRenderedDateKey = null;
+
+  $chatEmptyState.style.display = "none";
+  $chatThread.style.display = "flex";
+  renderAvatarInto($chatThreadAvatar, username, null);
+  fetchAndCacheAvatar(accountKey, (avatarUrl) => { if (avatarUrl) renderAvatarInto($chatThreadAvatar, username, avatarUrl); });
+  $chatThreadHeaderName.textContent = username;
+  $groupInfoBtn.style.display = "none";
+  updateChatThreadHeaderStatus();
+  fetchOtherLastSeen(accountKey);
+
+  $chatMessages.innerHTML = "";
+  openThreadId = watchThreadMessages(accountKey, renderChatMessage, updateRenderedMessage);
+  markLastRead(openThreadId);
+  watchTyping(false, accountKey, renderTypingIndicator);
+  watchThreadReads(openThreadId, (reads) => { threadReadsState = reads; refreshReadReceiptDisplay(); });
+
+  if (currentUserData) renderFriendsList(currentUserData);
+  if (myGroupChats.length) renderGroupsList(myGroupChats);
+
+  enterMobileChatView();
+  if (window.innerWidth > 720) $chatMsgInput.focus();
+}
+
+function refreshReadReceiptDisplay() {
+  if (openChatGcId || !currentSession) return;
+  const otherKey = openChatAccountKey;
+  const otherLastRead = threadReadsState[otherKey];
+  if (!otherLastRead) return;
+  const mineBubbles = [...$chatMessages.querySelectorAll(".chat-msg.mine")];
+  mineBubbles.forEach(el => { const tag = el.querySelector(".seen-tag"); if (tag) tag.remove(); });
+  for (let i = mineBubbles.length - 1; i >= 0; i--) {
+    const el = mineBubbles[i];
+    if (el.dataset.msgId <= otherLastRead) {
+      const meta = el.querySelector(".chat-msg-meta:last-child");
+      if (meta && !meta.querySelector(".seen-tag")) meta.appendChild(h("span", { className: "seen-tag" }, " ✓✓"));
+      break;
+    }
+  }
+}
+
+function openGroupChat(gcId) {
+  showConversationsView();
+  clearPendingImage();
+  cancelReply();
+  cancelEditing();
+  openChatAccountKey = null;
+  openChatUsername = null;
+  openChatGcId = gcId;
+  openThreadId = null;
+  markLastRead(gcId);
+  chatMessageCount = 0;
+  lastRenderedDateKey = null;
+
+  const gc = myGroupChats.find(g => g.gcId === gcId);
+  $chatEmptyState.style.display = "none";
+  $chatThread.style.display = "flex";
+  $chatThreadAvatar.innerHTML = "";
+  $chatThreadAvatar.textContent = "👥";
+  $chatThreadAvatar.classList.add("group-avatar");
+  $chatThreadHeaderName.textContent = gc ? gc.name : "Group";
+  $groupInfoBtn.style.display = "inline-block";
+  watchGroupInfo(gcId, () => updateChatThreadHeaderStatus());
+  updateChatThreadHeaderStatus();
+
+  $chatMessages.innerHTML = "";
+  watchGroupMessages(gcId, renderChatMessage, updateRenderedMessage);
+  watchTyping(true, gcId, renderTypingIndicator);
+
+  if (currentUserData) renderFriendsList(currentUserData);
+  renderGroupsList(myGroupChats);
+
+  enterMobileChatView();
+  if (window.innerWidth > 720) $chatMsgInput.focus();
+}
+
+function closeOpenChat() {
+  setTimeout(renderDmProfile, 0);
+  unwatchGroupInfo();
+  stopWatchingOpenChat();
+  setTyping(!!openChatGcId, openChatGcId || openChatAccountKey, false);
+  openChatAccountKey = null;
+  openChatUsername = null;
+  openChatGcId = null;
+  openThreadId = null;
+  $chatThreadAvatar.classList.remove("group-avatar");
+  $chatThread.style.display = "none";
+  $chatEmptyState.style.display = "flex";
+  $groupInfoBtn.style.display = "none";
+  exitMobileChatView();
+}
+
+// Opening a conversation always switches to DM mode (so the thread is
+// visible) and, on phones, closes the drawer to reveal it. Closing the
+// thread on a phone re-opens the drawer so "back" lands on the list.
+function enterMobileChatView() {
+  $appShell.classList.add("thread-open");
+  $appShell.classList.remove("nav-open");
+  if (uiMode !== "dm") { uiMode = "dm"; applyUiMode(); }
+}
+function exitMobileChatView() {
+  $appShell.classList.remove("thread-open");
+  if (uiMode === "dm" && isMobileLayout() && currentSession) $appShell.classList.add("nav-open");
+}
+$chatBackBtn.addEventListener("click", closeOpenChat);
+
+let pendingImageDataUrl = null;
+async function stageImageFile(file) {
+  if (!file) return;
+  if (!openChatAccountKey && !openChatGcId) return;
+  if (!file.type.startsWith("image/")) { showComposerNotice("That file isn't an image."); $imageFileInput.value = ""; return; }
+  if (file.size > MAX_IMAGE_SOURCE_BYTES) { showComposerNotice("Image is too large (max 15 MB)."); $imageFileInput.value = ""; return; }
+  $uploadImageBtn.disabled = true;
+  try {
+    const dataUrl = await compressImageFile(file);
+    pendingImageDataUrl = dataUrl;
+    $pendingImagePreview.src = dataUrl;
+    $pendingImageBar.style.display = "flex";
+  } catch (e) { showComposerNotice(e.message || "Couldn't process that image."); }
+  finally { $uploadImageBtn.disabled = false; $imageFileInput.value = ""; }
+}
+function clearPendingImage() {
+  pendingImageDataUrl = null;
+  $pendingImagePreview.src = "";
+  $pendingImageBar.style.display = "none";
+  $imageFileInput.value = "";
+}
+$uploadImageBtn.addEventListener("click", () => $imageFileInput.click());
+$imageFileInput.addEventListener("change", () => stageImageFile($imageFileInput.files[0]));
+$cancelPendingImageBtn.addEventListener("click", clearPendingImage);
+
+/* ══════════════════════════════════════════════════════════
+   EMOJI PICKER — one shared picker for chat + DMs (search, categories, recent).
+   openEmojiPicker(anchorEl, onPick)  ·  window.VUS_UI.openEmojiPicker
+   ══════════════════════════════════════════════════════════ */
+let EMOJI_DATA = [
+  ["🙂", "Smileys", "😀 grin happy|😃 smile|😄 laugh|😁 beam|😆 haha|😅 sweat nervous|😂 joy lol tears|🤣 rofl|🙂 slight smile|🙃 upside down|😉 wink|😊 blush|😇 angel halo|🥰 love hearts|😍 heart eyes|🤩 star struck wow|😘 kiss|😋 yum tasty|😛 tongue|😜 crazy wink|🤪 zany|🤑 money|🤗 hug|🤭 oops giggle|🤫 shh quiet|🤔 think hmm|🫡 salute|🤐 zip mouth|😐 neutral|😑 expressionless|😶 silent|😏 smirk|😒 unamused|🙄 eyeroll|😬 grimace|😌 relieved|😔 pensive sad|😴 sleep|🤤 drool|😷 mask sick|🤒 fever|🤕 hurt|🤢 nauseated|🤮 vomit|🥵 hot|🥶 cold freezing|🥴 woozy drunk|😵 dizzy|🤯 mind blown|🤠 cowboy|🥳 party|😎 cool sunglasses|🤓 nerd|🧐 monocle|😕 confused|😟 worried|🙁 frown|😮 wow surprised|😲 astonished|😳 flushed|🥺 pleading puppy|😢 cry|😭 sob loud crying|😱 scream fear|😞 disappointed|😩 weary|😫 tired|🥱 yawn bored|😤 triumph huff|😡 angry rage|😠 mad|🤬 swearing|😈 devil|👿 imp|💀 skull dead|☠️ skull crossbones|💩 poop|🤡 clown|👻 ghost|👽 alien|🤖 robot|🙈 see no evil|🙉 hear no evil|🙊 speak no evil|🫠 melting|🫢 peeking|🫣 peek|🥹 holding back tears|😶‍🌫️ fog"],
+  ["👍", "Hands & people", "👍 thumbs up yes|👎 thumbs down no|👌 ok|✌️ peace victory|🤞 fingers crossed luck|🤟 love you|🤘 rock on|🤙 call me|👈 left|👉 right|👆 up|👇 down|☝️ point up|✋ hand stop|🖐️ splayed|👋 wave hello bye|🤚 raised back|🖖 vulcan|👏 clap|🙌 raised hands|🫶 heart hands|👐 open hands|🤲 palms up|🤝 handshake deal|🙏 pray please thanks|✍️ writing|💪 muscle strong flex|🦾 mechanical arm|👀 eyes look|👁️ eye|👅 tongue|👄 mouth|🧠 brain|🫀 heart organ|👶 baby|🧒 child|👦 boy|👧 girl|🧑 person|👨 man|👩 woman|🧓 older|🕵️ detective|👮 police|👷 builder|🧑‍💻 coder developer|🧑‍🎤 singer|🧑‍🚀 astronaut|🦸 hero|🧙 mage wizard|🧛 vampire|🧟 zombie|🧞 genie|🚶 walking|🏃 running|💃 dance|🕺 dancing"],
+  ["❤️", "Hearts & symbols", "❤️ red heart love|🧡 orange heart|💛 yellow heart|💚 green heart|💙 blue heart|💜 purple heart|🖤 black heart|🤍 white heart|🤎 brown heart|💔 broken heart|❣️ heart exclamation|💕 two hearts|💞 revolving hearts|💓 beating heart|💗 growing heart|💖 sparkling heart|💘 cupid|💝 gift heart|💯 100 hundred|💢 anger|💥 boom collision|💫 dizzy star|💦 sweat droplets|💨 dash wind|💬 speech bubble|💭 thought|💤 zzz sleep|✨ sparkles|⭐ star|🌟 glowing star|⚡ lightning bolt|🔥 fire lit|🎉 party popper tada|🎊 confetti|✅ check yes done|❌ cross no|❗ exclamation|❓ question|⚠️ warning|🚫 prohibited|⛔ no entry|➕ plus|➖ minus|➡️ right arrow|⬅️ left arrow|⬆️ up arrow|⬇️ down arrow|🔁 repeat|🔔 bell|🔕 muted bell|🔒 lock|🔓 unlock|🔑 key|🏁 finish flag|🚩 red flag|♻️ recycle|☑️ checkbox|🆗 ok|🆒 cool|🆕 new|🆙 up|🔴 red circle|🟠 orange circle|🟡 yellow circle|🟢 green circle|🔵 blue circle|🟣 purple circle|⚫ black circle|⚪ white circle"],
+  ["🐶", "Animals & nature", "🐶 dog|🐱 cat|🐭 mouse|🐹 hamster|🐰 rabbit bunny|🦊 fox|🐻 bear|🐼 panda|🐨 koala|🐯 tiger|🦁 lion|🐮 cow|🐷 pig|🐸 frog|🐵 monkey|🐔 chicken|🐧 penguin|🐦 bird|🐤 chick|🦆 duck|🦅 eagle|🦉 owl|🦇 bat|🐺 wolf|🐴 horse|🦄 unicorn|🐝 bee|🐛 bug|🦋 butterfly|🐌 snail|🐞 ladybug|🐜 ant|🕷️ spider|🐢 turtle|🐍 snake|🦎 lizard|🐙 octopus|🦑 squid|🦀 crab|🐠 fish|🐬 dolphin|🐳 whale|🦈 shark|🐊 crocodile|🐘 elephant|🦒 giraffe|🦓 zebra|🐪 camel|🐑 sheep|🐐 goat|🐕 dog2|🐈 cat2|🌵 cactus|🌲 tree pine|🌳 tree|🌴 palm|🌱 seedling|🍀 clover luck|🍁 maple leaf|🍂 fallen leaf|🌷 tulip|🌹 rose|🌻 sunflower|🌼 blossom|💐 bouquet|🍄 mushroom|🌍 earth globe|🌙 moon|☀️ sun|⛅ cloudy|☁️ cloud|🌧️ rain|⛈️ storm|❄️ snow|☃️ snowman|🌈 rainbow|🌊 wave water|🔥 fire"],
+  ["🍕", "Food & drink", "🍎 apple|🍊 orange|🍋 lemon|🍌 banana|🍉 watermelon|🍇 grapes|🍓 strawberry|🍒 cherries|🍑 peach|🥭 mango|🍍 pineapple|🥥 coconut|🥑 avocado|🍅 tomato|🥕 carrot|🌽 corn|🌶️ chili pepper|🥔 potato|🍞 bread|🥐 croissant|🧀 cheese|🍳 egg cooking|🥞 pancakes|🥓 bacon|🍔 burger|🍟 fries|🌭 hot dog|🍕 pizza|🌮 taco|🌯 burrito|🥪 sandwich|🍗 chicken leg|🍖 meat|🍝 spaghetti pasta|🍜 ramen noodles|🍣 sushi|🍤 shrimp|🍙 rice ball|🍚 rice|🍦 ice cream|🍧 shaved ice|🍩 donut|🍪 cookie|🎂 cake birthday|🍰 shortcake|🧁 cupcake|🍫 chocolate|🍬 candy|🍿 popcorn|☕ coffee|🍵 tea|🧋 bubble tea boba|🥤 soda cup|🍺 beer|🍻 cheers beers|🍷 wine|🥂 champagne toast|🍸 cocktail|🧃 juice|🥛 milk|💧 water drop"],
+  ["⚽", "Activities & objects", "⚽ soccer football|🏀 basketball|🏈 american football|⚾ baseball|🎾 tennis|🏐 volleyball|🏓 ping pong|🎱 8 ball pool|🥊 boxing|🎯 dart bullseye|🎮 video game controller|🕹️ joystick|🎲 dice|🧩 puzzle|♟️ chess|🎰 slot machine|🎧 headphones|🎵 music note|🎶 notes|🎤 microphone|🎸 guitar|🥁 drums|🎹 piano|🎬 movie clapper|📺 tv|📷 camera|📱 phone|💻 laptop|🖥️ desktop computer|⌨️ keyboard|🖱️ mouse|💾 floppy save|💿 disc|🔋 battery|🔌 plug|💡 idea bulb|🔦 flashlight|📚 books|📖 book|📝 memo note|✏️ pencil|🖊️ pen|📌 pin|📎 paperclip|✂️ scissors|🔧 wrench|🔨 hammer|⚙️ gear|🧰 toolbox|🔬 microscope|🔭 telescope|💊 pill|🩹 bandage|💰 money bag|💵 dollar|💎 gem diamond|👑 crown|🎁 gift present|🏆 trophy|🥇 gold medal first|🥈 silver|🥉 bronze|🎈 balloon|🧸 teddy bear|🛒 cart|🔍 search magnifier|🔗 link|📦 package|✉️ mail|📅 calendar|⏰ alarm clock|⌛ hourglass"],
+  ["🚗", "Travel & places", "🚗 car|🚕 taxi|🚌 bus|🚓 police car|🚑 ambulance|🚒 fire truck|🏎️ race car|🚲 bike|🛴 scooter|🏍️ motorcycle|🚂 train|🚀 rocket|✈️ airplane|🛸 ufo|🚁 helicopter|⛵ sailboat|🚢 ship|⚓ anchor|🏠 house home|🏢 office|🏫 school|🏥 hospital|🏰 castle|🗼 tower|🗽 statue of liberty|⛰️ mountain|🌋 volcano|🏖️ beach|🏝️ island|🏕️ camping|🌆 city sunset|🌃 night city|🌉 bridge|🎡 ferris wheel|🎢 roller coaster|⛽ fuel|🚦 traffic light|🗺️ map|🧭 compass|⏳ hourglass flowing|🌅 sunrise|🌄 sunrise mountains"]
+].map(([icon, name, raw]) => ({ icon, name, items: raw.split("|").map(s => { const i = s.indexOf(" "); return { e: i < 0 ? s : s.slice(0, i), k: i < 0 ? "" : s.slice(i + 1) }; }) }));
+const EMOJI_RECENT_KEY = "vus_emoji_recent_v1";
+let emojiRecent = [];
+try { emojiRecent = JSON.parse(localStorage.getItem(EMOJI_RECENT_KEY) || "[]").filter(x => typeof x === "string").slice(0, 24); } catch (e) { emojiRecent = []; }
+function rememberEmoji(e) {
+  emojiRecent = [e].concat(emojiRecent.filter(x => x !== e)).slice(0, 24);
+  try { localStorage.setItem(EMOJI_RECENT_KEY, JSON.stringify(emojiRecent)); } catch (err) {}
+}
+let emojiPopEl = null, emojiPopAnchor = null, emojiPopCleanup = null;
+function closeEmojiPicker() {
+  if (emojiPopEl) { emojiPopEl.remove(); emojiPopEl = null; }
+  if (emojiPopCleanup) { emojiPopCleanup(); emojiPopCleanup = null; }
+  emojiPopAnchor = null;
+}
+function openEmojiPicker(anchor, onPick, opts) {
+  if (emojiPopEl && emojiPopAnchor === anchor) { closeEmojiPicker(); return; }   // clicking the same button again closes it
+  closeEmojiPicker();
+  emojiPopAnchor = anchor;
+  const pop = h("div", { className: "emoji-pop", role: "dialog", "aria-label": "Emoji picker" });
+  const search = h("input", { type: "text", className: "emoji-search", placeholder: "Search emoji (try “heart”, “fire”, “laugh”)", autocomplete: "off", spellcheck: "false" });
+  const tabs = h("div", { className: "emoji-tabs" });
+  const grid = h("div", { className: "emoji-grid" });
+  const foot = h("div", { className: "emoji-foot" });
+  pop.append(search, tabs, grid, foot);
+  if (!emojiDb) loadEmojiDb().then(() => { if (emojiDb && emojiPopEl === pop && !search.value) { closeEmojiPicker(); openEmojiPicker(anchor, onPick, opts); } });
+  // skin tone + device picker
+  const toneRow = h("div", { className: "emoji-tones" });
+  ["", "\uD83C\uDFFB", "\uD83C\uDFFC", "\uD83C\uDFFD", "\uD83C\uDFFE", "\uD83C\uDFFF"].forEach((mod, i) => {
+    toneRow.appendChild(h("button", { type: "button", className: "emoji-tone" + (emojiTone === i ? " on" : ""), title: i ? "Skin tone " + i : "Default (yellow)", onclick: () => { emojiTone = i; try { localStorage.setItem(EMOJI_TONE_KEY, String(i)); } catch (e) {} toneRow.querySelectorAll("button").forEach((b, j) => b.classList.toggle("on", j === i)); paint(search.value); } }, "\uD83D\uDC4D" + mod));
+  });
+  const hint = h("div", { className: "emoji-device-hint" });
+  const devBtn = h("button", { type: "button", className: "emoji-device-btn", onclick: () => {
+    if (opts && opts.input) opts.input.focus();
+    hint.textContent = deviceEmojiHint();
+    hint.style.display = "block";
+  } }, "Use my device's emoji picker");
+  foot.append(toneRow, devBtn, hint);
+  const pick = (e, keep) => { rememberEmoji(e); onPick(e); if (!keep) closeEmojiPicker(); else paint(search.value); };
+  const cell = (item) => { const ch = toneOf(item); return h("button", { type: "button", className: "emoji-cell", title: item.n || item.k || "", onclick: (ev) => pick(ch, ev.shiftKey) }, ch); };
+  let activeCat = emojiRecent.length ? -1 : 0;
+  function paint(q) {
+    grid.replaceChildren();
+    tabs.querySelectorAll("button").forEach(b => b.classList.toggle("on", !q && Number(b.dataset.cat) === activeCat));
+    q = String(q || "").trim().toLowerCase();
+    if (q) {
+      const seen = new Set();
+      const hits = [];
+      EMOJI_DATA.forEach(c => c.items.forEach(it => { if (!seen.has(it.e) && (it.k.toLowerCase().includes(q) || it.e === q)) { seen.add(it.e); hits.push(it); } }));
+      if (!hits.length) grid.appendChild(h("div", { className: "emoji-empty" }, "No emoji found for “" + q + "”."));
+      hits.forEach(it => grid.appendChild(cell(it)));
+      return;
+    }
+    if (activeCat === -1) {
+      grid.appendChild(h("div", { className: "emoji-cat-name" }, "Recently used"));
+      emojiRecent.forEach(e => grid.appendChild(cell({ e, k: "" })));
+      return;
+    }
+    const cat = EMOJI_DATA[activeCat];
+    grid.appendChild(h("div", { className: "emoji-cat-name" }, cat.name));
+    cat.items.forEach(it => grid.appendChild(cell(it)));
+  }
+  if (emojiRecent.length) tabs.appendChild(h("button", { type: "button", "data-cat": "-1", title: "Recent", onclick: () => { activeCat = -1; search.value = ""; paint(""); } }, "🕘"));
+  EMOJI_DATA.forEach((c, i) => tabs.appendChild(h("button", { type: "button", "data-cat": String(i), title: c.name, onclick: () => { activeCat = i; search.value = ""; paint(""); } }, c.icon)));
+  search.addEventListener("input", () => paint(search.value));
+  document.body.appendChild(pop);
+  emojiPopEl = pop;
+  paint("");
+  // place it next to the button: above if there's room, else below; never off-screen
+  const r = anchor.getBoundingClientRect();
+  const w = Math.min(360, window.innerWidth - 16), hgt = 400;
+  pop.style.width = w + "px";
+  let top = r.top - hgt - 8; if (top < 8) top = Math.min(window.innerHeight - hgt - 8, r.bottom + 8);
+  let left = Math.min(Math.max(8, r.right - w), window.innerWidth - w - 8);
+  pop.style.top = Math.max(8, top) + "px"; pop.style.left = left + "px";
+  const onDoc = (e) => { if (!pop.contains(e.target) && !anchor.contains(e.target)) closeEmojiPicker(); };
+  const onKey = (e) => { if (e.key === "Escape") { e.stopImmediatePropagation(); closeEmojiPicker(); } };
+  setTimeout(() => document.addEventListener("mousedown", onDoc, true), 0);
+  document.addEventListener("keydown", onKey, true);
+  emojiPopCleanup = () => { document.removeEventListener("mousedown", onDoc, true); document.removeEventListener("keydown", onKey, true); };
+  search.focus({ preventScroll: true });
+}
+window.VUS_UI = Object.assign(window.VUS_UI || {}, { openEmojiPicker, closeEmojiPicker });
+
+/* ══════════ Full emoji database (every Unicode emoji) + :shortcode suggestions ══════════
+   The list comes from the emojibase-data package on jsDelivr (pinned version) and is cached in this browser,
+   so it downloads once. If it can't be loaded, the built-in list above is used instead. */
+const EMOJI_DB_BASE = "https://cdn.jsdelivr.net/npm/emojibase-data@15.3.2/en/";
+const EMOJI_DB_CACHE_KEY = "vus_emoji_db_v1";
+const EMOJI_TONE_KEY = "vus_emoji_tone_v1";
+const EMOJI_GROUPS = [[0, "\uD83D\uDE00", "Smileys & emotion"], [1, "\uD83D\uDC4B", "People & body"], [3, "\uD83D\uDC36", "Animals & nature"], [4, "\uD83C\uDF55", "Food & drink"], [5, "\uD83D\uDE97", "Travel & places"], [6, "\u26BD", "Activities"], [7, "\uD83D\uDCA1", "Objects"], [8, "\u2764\uFE0F", "Symbols"], [9, "\uD83C\uDFC1", "Flags"]];
+let emojiDb = null, emojiDbPromise = null, emojiByShortcode = {};
+let emojiTone = 0;
+try { emojiTone = Math.min(5, Math.max(0, Number(localStorage.getItem(EMOJI_TONE_KEY)) || 0)); } catch (e) {}
+function toneOf(item) {
+  if (!emojiTone || !item.skins) return item.e;
+  const s = item.skins.find(x => x[0] === emojiTone);
+  return s ? s[1] : item.e;
+}
+function deviceEmojiHint() {
+  const p = String(navigator.platform || "") + " " + String(navigator.userAgent || "");
+  if (/Win/i.test(p)) return "Browsers can't open it for you. Click the message box, then press the Windows key + . (period).";
+  if (/Mac/i.test(p) && !/iPhone|iPad/i.test(p)) return "Browsers can't open it for you. Click the message box, then press Control + Command + Space.";
+  if (/Android|iPhone|iPad/i.test(p)) return "Tap the message box, then tap the emoji key (😀 or 🌐) on your keyboard.";
+  return "Browsers can't open it for you. Click the message box and use your system's emoji shortcut.";
+}
+function buildEmojiDb(rows) {   // rows: [emoji, label, tags, group, shortcodes, skins]
+  const list = rows.map(r => ({ e: r[0], n: r[1], k: (r[1] + " " + r[2] + " " + r[4]).toLowerCase(), g: r[3], sc: r[4] ? r[4].split(" ") : [], skins: r[5] && r[5].length ? r[5] : null }));
+  const byCode = {};
+  list.forEach(it => it.sc.forEach(c => { if (!byCode[c]) byCode[c] = it; }));
+  emojiByShortcode = byCode;
+  emojiDb = list;
+  const cats = EMOJI_GROUPS.map(([g, icon, name]) => ({ icon, name, items: list.filter(it => it.g === g) })).filter(c => c.items.length);
+  if (cats.length) EMOJI_DATA = cats;
+}
+function loadEmojiDb() {
+  if (emojiDb) return Promise.resolve(emojiDb);
+  if (emojiDbPromise) return emojiDbPromise;
+  emojiDbPromise = (async () => {
+    try { const raw = localStorage.getItem(EMOJI_DB_CACHE_KEY); if (raw) { const rows = JSON.parse(raw); if (Array.isArray(rows) && rows.length > 1000) { buildEmojiDb(rows); return emojiDb; } } } catch (e) {}
+    try {
+      const [cr, sr] = await Promise.all([fetch(EMOJI_DB_BASE + "compact.json"), fetch(EMOJI_DB_BASE + "shortcodes/github.json")]);
+      if (!cr.ok || !sr.ok) throw new Error("emoji data unavailable");
+      const compact = await cr.json(), codes = await sr.json();
+      const rows = compact.filter(x => x.group !== undefined && x.group !== 2).map(x => {
+        const sc = codes[x.hexcode]; const scs = Array.isArray(sc) ? sc : (sc ? [sc] : []);
+        const skins = [];
+        (x.skins || []).forEach(s => {
+          const m = String(s.hexcode).match(/1F3F[B-F]/g);
+          if (m && m.every(t => t === m[0])) { const tone = m[0].charCodeAt(4) - "B".charCodeAt(0) + 1; if (!skins.some(q => q[0] === tone)) skins.push([tone, s.unicode]); }
+        });
+        return [x.unicode, x.label, (x.tags || []).join(" "), x.group, scs.join(" "), skins];
+      });
+      buildEmojiDb(rows);
+      try { localStorage.setItem(EMOJI_DB_CACHE_KEY, JSON.stringify(rows)); } catch (e) {}
+      return emojiDb;
+    } catch (e) { emojiDbPromise = null; return null; }
+  })();
+  return emojiDbPromise;
+}
+// Best matches for what was typed after a colon (":laug" -> laughing, joy, ...).
+function suggestEmojis(q, max) {
+  q = String(q || "").toLowerCase().replace(/^:/, "");
+  if (q.length < 2) return [];
+  const pool = emojiDb || [].concat(...EMOJI_DATA.map(c => c.items)).map(it => ({ e: it.e, n: (it.k || "").split(" ")[0], k: (it.k || "").toLowerCase(), sc: (it.k || "").split(/\s+/).filter(Boolean).slice(0, 1).map(w => w.replace(/\W+/g, "_")), skins: null }));
+  const scored = [];
+  const seen = new Set();
+  pool.forEach((it, i) => {
+    if (seen.has(it.e)) return;
+    let s = -1;
+    if (it.sc.some(c => c === q)) s = 0;
+    else if (it.sc.some(c => c.startsWith(q))) s = 1;
+    else if (it.n && it.n.toLowerCase().startsWith(q)) s = 2;
+    else if (it.sc.some(c => c.includes(q))) s = 3;
+    else if (it.k.split(/[\s_]+/).some(w => w.startsWith(q))) s = 4;
+    else if (it.k.includes(q)) s = 5;
+    if (s >= 0) { seen.add(it.e); scored.push([s, i, it]); }
+  });
+  scored.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  return scored.slice(0, max || 8).map(x => x[2]);
+}
+const EMOJI_TOKEN_RE = /(^|[\s(])(:[A-Za-z0-9_+\-]{2,})$/;
+const EMOJI_DONE_RE = /(^|[\s(]):([A-Za-z0-9_+\-]{2,}):$/;
+let emojiSuggestEl = null;
+function closeEmojiSuggest() { if (emojiSuggestEl) { emojiSuggestEl.remove(); emojiSuggestEl = null; } }
+/* Type ":" + 2 letters in this box to get emoji suggestions; Up/Down + Enter/Tab picks; a finished ":name:" turns into the emoji. */
+function attachEmojiSuggest(input) {
+  if (!input || input.dataset.emojiSuggest) return;
+  input.dataset.emojiSuggest = "1";
+  let items = [], idx = 0, tokenStart = -1;
+  const fits = (txt) => !(input.maxLength > 0 && txt.length > input.maxLength);
+  function replaceRange(from, to, text) {
+    const next = input.value.slice(0, from) + text + input.value.slice(to);
+    if (!fits(next)) return false;
+    input.value = next;
+    input.selectionStart = input.selectionEnd = from + text.length;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    return true;
+  }
+  function choose(i) {
+    const it = items[i]; if (!it || tokenStart < 0) return;
+    const caret = input.selectionStart;
+    const ch = toneOf(it);
+    if (replaceRange(tokenStart, caret, ch)) { rememberEmoji(ch); }
+    close();
+    input.focus();
+  }
+  function close() { closeEmojiSuggest(); items = []; tokenStart = -1; }
+  function paintList() {
+    closeEmojiSuggest();
+    if (!items.length) return;
+    const box = h("div", { className: "emoji-suggest", role: "listbox" });
+    items.forEach((it, i) => {
+      const code = (it.sc && it.sc[0]) || (it.n || "").replace(/\W+/g, "_");
+      box.appendChild(h("div", { className: "emoji-suggest-row" + (i === idx ? " on" : ""), role: "option", onmousedown: (ev) => { ev.preventDefault(); choose(i); } },
+        h("span", { className: "emoji-suggest-ch" }, toneOf(it)), h("span", { className: "emoji-suggest-name" }, ":" + code + ":")));
+    });
+    document.body.appendChild(box);
+    emojiSuggestEl = box;
+    const r = input.getBoundingClientRect();
+    box.style.left = Math.max(8, Math.min(r.left, window.innerWidth - box.offsetWidth - 8)) + "px";
+    box.style.top = Math.max(8, r.top - box.offsetHeight - 6) + "px";
+    box.style.minWidth = Math.min(260, Math.max(180, r.width * 0.5)) + "px";
+  }
+  function update() {
+    const caret = input.selectionStart == null ? input.value.length : input.selectionStart;
+    const before = input.value.slice(0, caret);
+    // finished :name: -> emoji
+    const done = before.match(EMOJI_DONE_RE);
+    if (done && emojiDb && emojiByShortcode[done[2].toLowerCase()]) {
+      const it = emojiByShortcode[done[2].toLowerCase()];
+      const from = caret - done[2].length - 2;
+      if (replaceRange(from, caret, toneOf(it))) { rememberEmoji(toneOf(it)); close(); return; }
+    }
+    const m = before.match(EMOJI_TOKEN_RE);
+    if (!m) { close(); return; }
+    tokenStart = caret - m[2].length;
+    if (!emojiDb) loadEmojiDb().then(() => { if (tokenStart >= 0 && document.activeElement === input) update(); });
+    items = suggestEmojis(m[2], 8); idx = 0;
+    paintList();
+  }
+  input.addEventListener("input", update);
+  input.addEventListener("click", update);
+  input.addEventListener("blur", () => setTimeout(close, 120));
+  input.addEventListener("keydown", (e) => {
+    if (!emojiSuggestEl) return;
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); e.stopImmediatePropagation(); idx = (idx + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length; paintList(); }
+    else if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); e.stopImmediatePropagation(); choose(idx); }
+    else if (e.key === "Escape") { e.preventDefault(); e.stopImmediatePropagation(); close(); }
+  }, true);
+}
+window.VUS_UI = Object.assign(window.VUS_UI || {}, { attachEmojiSuggest, loadEmojiDb, suggestEmojis });
+setTimeout(() => { try { loadEmojiDb(); } catch (e) {} }, 4000);   // warm the cache in the background
+
+function buildEmojiPicker() {
+  $emojiPickerPopover.innerHTML = "";
+  QUICK_EMOJIS.forEach(emoji => {
+    $emojiPickerPopover.appendChild(h("button", { onclick: () => {
+      insertAtCursor($chatMsgInput, emoji);
+      $emojiPickerPopover.classList.remove("show");
+      $chatMsgInput.focus();
+    }}, emoji));
+  });
+}
+function insertAtCursor(textarea, text) {
+  const start = textarea.selectionStart, end = textarea.selectionEnd;
+  textarea.value = textarea.value.slice(0, start) + text + textarea.value.slice(end);
+  textarea.selectionStart = textarea.selectionEnd = start + text.length;
+  autosizeChatInput();
+}
+$emojiPickerBtn.addEventListener("click", () => openEmojiPicker($emojiPickerBtn, e => { insertAtCursor($chatMsgInput, e); $chatMsgInput.focus(); }, { input: $chatMsgInput }));
+attachEmojiSuggest($chatMsgInput);
+
+function openImageLightbox(src) { if (!src) return; $imageLightboxImg.src = src; $imageLightbox.classList.add("show"); }
+function closeImageLightbox() { $imageLightbox.classList.remove("show"); $imageLightboxImg.removeAttribute("src"); }
+$imageLightbox.addEventListener("click", closeImageLightbox);
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $imageLightbox.classList.contains("show")) { e.stopImmediatePropagation(); closeImageLightbox(); } }, true);
+window.VUS_UI = Object.assign(window.VUS_UI || {}, { openImage: openImageLightbox, closeImage: closeImageLightbox });
+
+function sendChatMessage() {
+  if (!openChatAccountKey && !openChatGcId) return;
+  const text = $chatMsgInput.value;
+  const imageToSend = pendingImageDataUrl;
+
+  if (editingMessageId) {
+    if (!text.trim()) return;
+    const id = editingMessageId;
+    $chatSendBtn.disabled = true;
+    const fn = openChatGcId ? editGroupMessage(openChatGcId, id, text) : editDirectMessage(openThreadId, id, text);
+    Promise.resolve(fn).then(res => {
+      $chatSendBtn.disabled = false;
+      if (!res.ok) { showComposerNotice(res.error); return; }
+      cancelEditing();
+      $chatMsgInput.value = ""; autosizeChatInput();
+    });
+    return;
+  }
+
+  if (!text.trim() && !imageToSend) return;
+  if (sendCooldownActive) return;
+
+  const REPLY_SNIPPET_MAX = 20;
+  const replySnapshot = replyingTo ? {
+    id: replyingTo.id,
+    fromLabel: replyingTo.fromLabel,
+    snippet: replyingTo.text.length > REPLY_SNIPPET_MAX ? replyingTo.text.slice(0, REPLY_SNIPPET_MAX) + "…" : replyingTo.text
+  } : null;
+  cancelReply();
+  setTyping(!!openChatGcId, openChatGcId || openChatAccountKey, false);
+
+  $chatMsgInput.value = "";
+  autosizeChatInput();
+  clearPendingImage();
+  beginSendCooldown();
+
+  const sendOne = (msgText, withImage, replyTo) => openChatGcId
+    ? sendGroupMessage(openChatGcId, msgText, withImage, replyTo)
+    : sendDirectMessage(openChatAccountKey, msgText, withImage, replyTo);
+
+  if (imageToSend) {
+    sendOne(null, imageToSend, replySnapshot).then(result => {
+      if (!result.ok) { showComposerNotice(result.error); return; }
+      if (text.trim()) {
+        return sendOne(text, null, null).then(textResult => {
+          if (!textResult.ok) showComposerNotice(textResult.error);
+        });
+      }
+    }).catch(() => showComposerNotice("Message failed to send — try again."));
+  } else {
+    sendOne(text, null, replySnapshot).then(result => {
+      if (!result.ok) showComposerNotice(result.error);
+    }).catch(() => showComposerNotice("Message failed to send — try again."));
+  }
+}
+
+let sendCooldownActive = false;
+let sendCooldownTimer = null;
+function beginSendCooldown() {
+  sendCooldownActive = true;
+  $chatSendBtn.disabled = true;
+  $uploadImageBtn.disabled = true;
+  clearTimeout(sendCooldownTimer);
+  sendCooldownTimer = setTimeout(endSendCooldown, SEND_DELAY_MS);
+}
+function endSendCooldown() {
+  sendCooldownActive = false;
+  clearTimeout(sendCooldownTimer);
+  $chatSendBtn.disabled = false;
+  $uploadImageBtn.disabled = false;
+}
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && sendCooldownActive) endSendCooldown();
+});
+
+function autosizeChatInput() {
+  $chatMsgInput.style.height = "auto";
+  $chatMsgInput.style.height = Math.min($chatMsgInput.scrollHeight, 120) + "px";
+}
+
+$chatSendBtn.addEventListener("click", sendChatMessage);
+$chatMsgInput.addEventListener("keydown", e => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChatMessage(); }
+  if (e.key === "Escape") { if (editingMessageId) { cancelEditing(); $chatMsgInput.value = ""; autosizeChatInput(); } else if (replyingTo) cancelReply(); }
+});
+
+let lastTypingBroadcast = 0;
+let typingStopTimer = null;
+$chatMsgInput.addEventListener("input", () => {
+  autosizeChatInput();
+  if (!openChatAccountKey && !openChatGcId) return;
+  const now = Date.now();
+  if (now - lastTypingBroadcast > 1500) {
+    lastTypingBroadcast = now;
+    setTyping(!!openChatGcId, openChatGcId || openChatAccountKey, true);
+  }
+  clearTimeout(typingStopTimer);
+  typingStopTimer = setTimeout(() => setTyping(!!openChatGcId, openChatGcId || openChatAccountKey, false), TYPING_TIMEOUT_MS);
+});
+
+function init() {
+  const usingPlaceholderConfig = FIREBASE_CONFIG.apiKey === "PASTE_YOUR_API_KEY_HERE";
+  if (usingPlaceholderConfig) {
+    document.getElementById("authCard").innerHTML = `
+      <h2>Not set up yet</h2>
+      <p style="color:#94a3b8;font-size:14px;line-height:1.5;margin-top:8px">
+        Fill in FIREBASE_CONFIG near the top of the script with your own
+        Firebase project's values before this will work.
+      </p>
+    `;
+    return;
+  }
+
+  try { initFirebase(); }
+  catch (e) {
+    document.getElementById("authCard").innerHTML = `<h2>Couldn't connect</h2><p style="color:#94a3b8;font-size:14px">${(e.message || "Unknown error")}</p>`;
+    return;
+  }
+
+  const session = loadSession();
+  if (session && session.accountKey) {
+    // Ban check runs BEFORE claimPresence/currentSession are set, same
+    // as the live-login path in the auth submit handler — a saved
+    // session from before a ban was applied must not get back into
+    // chat just by reloading the page. This inner block is async so
+    // the ban check can be awaited without making init() itself async
+    // (everything after this if/else stays synchronous and TDZ-safe,
+    // per the setTimeout deferral comments below).
+    (async () => {
+      try {
+        const snap = await usersRef.child(session.accountKey).get();
+        const acc = snap.val();
+        if (!acc || acc.username !== session.username || String(acc.id) !== String(session.id)) {
+          clearSession(); showAuthFlow(); setMode("login"); return;
+        }
+      } catch (e) { /* offline: trust the saved session */ }
+      currentSession = session;
+      claimOwnership(session.accountKey);
+      claimPresence(session.accountKey, session.username);
+      watchOwnAccount(session.accountKey, renderAllRelationshipUI);
+      watchMyGroupChats(renderGroupsList);
+      showLoggedInState(session);
+      closeDmSidebar();
+      announceSession(session);
+    })();
+  } else {
+    showAuthFlow();
+    setMode("login");
+  }
+
+  watchPresenceList(renderOnlineList);
+  setInterval(() => { if (currentSession && myPresenceRef) recordLastSeen(currentSession.accountKey); }, 4 * 60 * 1000);
+
+  window.addEventListener("beforeunload", () => {
+    releasePresence();
+    if (currentSession) recordLastSeen(currentSession.accountKey);
+  });
+}
+
+
+/* ══════════════════════════════════════════════════════════
+   BRIDGE TO THE CHAT ROOM (chat.js)
+   chat.js never touches accounts directly. It listens for "vus:session" /
+   "vus:logout" and calls window.VUS_DM for anything friend-related.
+   ══════════════════════════════════════════════════════════ */
+function announceSession(session) {
+  // Deferred so chat.js (loaded after this file) has registered its listener
+  // even when this runs during page load.
+  setTimeout(() => window.dispatchEvent(new CustomEvent("vus:session", { detail: { accountKey: session.accountKey, username: session.username, id: session.id } })), 0);
+}
+
+const $chatUserProfileOverlay = document.getElementById("chatUserProfileOverlay");
+const $chatUserProfileName = document.getElementById("chatUserProfileName");
+const $chatUserProfileId = document.getElementById("chatUserProfileId");
+const $chatUserProfileStatus = document.getElementById("chatUserProfileStatus");
+const $chatUserProfileCloseBtn = document.getElementById("chatUserProfileCloseBtn");
+const $chatUserProfileAddBtn = document.getElementById("chatUserProfileAddBtn");
+const $chatUserProfileMsgBtn = document.getElementById("chatUserProfileMsgBtn");
+const $chatUserProfileMuteBtn = document.getElementById("chatUserProfileMuteBtn");
+const $chatUserProfileAvatar = document.getElementById("chatUserProfileAvatar");
+const $chatUserProfileRoles = document.getElementById("chatUserProfileRoles");
+const $chatUserProfileBioWrap = document.getElementById("chatUserProfileBioWrap");
+const $chatUserProfileBio = document.getElementById("chatUserProfileBio");
+const $chatUserProfileSong = document.getElementById("chatUserProfileSong");
+let profileSongUnsub = null;
+function stopProfileSong() { if (profileSongUnsub) { profileSongUnsub(); profileSongUnsub = null; } }
+
+function closeChatUserProfile() { stopProfileSong(); profileGoneToken++; $chatUserProfileOverlay.style.display = "none"; }
+// "View full profile": the same card, bigger and centred.
+const $chatUserProfileFullBtn = document.getElementById("chatUserProfileFullBtn");
+function setProfileFull(on) {
+  const card = $chatUserProfileOverlay.querySelector(".profile-card");
+  if (card) card.classList.toggle("pc-full", !!on);
+  $chatUserProfileFullBtn.textContent = on ? "Back to card" : "View full profile";
+}
+$chatUserProfileFullBtn.addEventListener("click", () => setProfileFull(!$chatUserProfileOverlay.querySelector(".profile-card").classList.contains("pc-full")));
+// An account that doesn't exist (any more): say so, then the card removes itself.
+let profileGoneToken = 0;
+function profileGone(name) {
+  $chatUserProfileName.textContent = name || "Unknown";
+  $chatUserProfileStatus.textContent = "This account no longer exists.";
+  $chatUserProfileFullBtn.style.display = "none";
+  const t = ++profileGoneToken;
+  setTimeout(() => { if (t === profileGoneToken && $chatUserProfileOverlay.style.display === "flex") closeChatUserProfile(); }, 2500);
+}
+$chatUserProfileCloseBtn.addEventListener("click", closeChatUserProfile);
+$chatUserProfileOverlay.addEventListener("click", (e) => { if (e.target === $chatUserProfileOverlay) closeChatUserProfile(); });
+
+// Rank pills (Owner, Admin, ...) for an account ID. The ranks live in the chat
+// database, so ask chat.js; if it isn't ready there's simply nothing to show.
+function fillRoles(container, loginId) {
+  container.replaceChildren();
+  const roles = (window.VUS_CHAT && loginId) ? window.VUS_CHAT.getRolesFor(loginId) : [];
+  roles.forEach(r => container.appendChild(h("span", { className: "pc-role role-" + r.id }, r.icon + " " + r.label)));
+}
+
+function resetProfileCard() {
+  { const ab = document.getElementById("chatUserProfileAlts"); if (ab) { ab.style.display = "none"; ab.replaceChildren(); } }
+  paintBanner(document.querySelector(".pc-banner"), null);
+  $chatUserProfileName.textContent = "Loading…";
+  $chatUserProfileAvatar.classList.remove("has-ring"); $chatUserProfileAvatar.style.removeProperty("--ring"); [...$chatUserProfileAvatar.classList].filter(c => c.startsWith("rfx")).forEach(c => $chatUserProfileAvatar.classList.remove(c));
+  profileGoneToken++; $chatUserProfileFullBtn.style.display = ""; setProfileFull(false);
+  $chatUserProfileId.textContent = "";
+  $chatUserProfileStatus.textContent = "";
+  $chatUserProfileStatus.style.color = "";
+  $chatUserProfileAddBtn.style.display = "none";
+  $chatUserProfileMsgBtn.style.display = "none";
+  $chatUserProfileMuteBtn.style.display = "none";
+  { const sb = document.getElementById("chatUserProfileStaff"); if (sb) { sb.replaceChildren(); sb.style.display = "none"; } }
+  $chatUserProfileRoles.replaceChildren();
+  $chatUserProfileBioWrap.style.display = "none";
+  { const j = document.getElementById("chatUserProfileJoined"); if (j) { j.textContent = ""; j.style.display = "none"; } const sn = document.getElementById("chatUserProfileSeen"); if (sn) { sn.textContent = ""; sn.style.display = "none"; } }
+  stopProfileSong();
+  $chatUserProfileSong.replaceChildren(); $chatUserProfileSong.style.display = "none";
+  $chatUserProfileAvatar.replaceChildren();
+  $chatUserProfileOverlay.style.display = "flex";
+}
+
+// Mute works on chat IDs and only changes what THIS browser shows (see chat.js).
+function setupProfileMute(prof) {
+  const chat = window.VUS_CHAT;
+  if (!chat || !chat.toggleMute || !prof.id) return;
+  const paint = () => { $chatUserProfileMuteBtn.textContent = chat.isMuted(prof.id) ? "Unmute for me" : "Mute for me"; };
+  $chatUserProfileMuteBtn.style.display = "inline-block";
+  $chatUserProfileMuteBtn.onclick = () => { chat.toggleMute(prof.id, prof.username); paint(); };
+  paint();
+}
+
+// Mute / Ban / Kick for people whose rank allows it against this person (rules live in chat.js).
+function renderStaffActions(prof) {
+  const box = document.getElementById("chatUserProfileStaff");
+  const chat = window.VUS_CHAT;
+  if (!box || !chat || !chat.staffActionsFor || !prof.id) return;
+  const acts = chat.staffActionsFor(prof.id, prof.username);
+  box.replaceChildren();
+  if (!acts.length) { box.style.display = "none"; return; }
+  box.style.display = "block";
+  box.appendChild(h("div", { className: "pc-h" }, "Staff actions"));
+  const row = h("div", { className: "pc-staff-row" });
+  acts.forEach(a => row.appendChild(h("button", { type: "button", className: "pc-staff-btn" + (a.id === "mute" ? "" : " danger"),
+    onclick: () => { $chatUserProfileCloseBtn.click(); chat.runStaffAction(a.id, prof.id, prof.username); } }, a.label)));
+  box.appendChild(row);
+  // Rank changes: a drop-down that starts on the next rank up, plus how long it lasts.
+  const ra = chat.roleActionsFor ? chat.roleActionsFor(prof.id) : [];
+  if (ra.length) {
+    box.appendChild(h("div", { className: "pc-h", style: "margin-top:10px" }, "Ranks"));
+    const sel = h("select", { className: "pc-role-select" });
+    ra.forEach((a, i) => sel.appendChild(h("option", { value: String(i) }, a.label)));
+    const dur = h("select", { className: "pc-role-select pc-role-dur" });
+    [["0", "Permanent"], ["3600000", "1 hour"], ["86400000", "1 day"], ["604800000", "1 week"], ["2592000000", "30 days"]].forEach(([v, t]) => dur.appendChild(h("option", { value: v }, t)));
+    const go = h("button", { type: "button", className: "pc-staff-btn", onclick: async () => {
+      const act = ra[Number(sel.value)];
+      go.disabled = true;
+      const done = await chat.runRoleAction(act.kind, act.roleId, prof.id, prof.username, act.kind === "grant" ? Number(dur.value) : 0);
+      go.disabled = false;
+      if (done) $chatUserProfileCloseBtn.click();
+    } }, "Apply");
+    const syncDur = () => { dur.style.display = ra[Number(sel.value)].kind === "grant" ? "" : "none"; };
+    sel.addEventListener("change", syncDur); syncDur();
+    box.appendChild(h("div", { className: "pc-staff-row" }, sel, dur, go));
+  }
+}
+
+function fillProfileCard(prof, accountKey) {
+  $chatUserProfileName.textContent = prof.username;
+  $chatUserProfileId.textContent = "#" + prof.id;
+  renderAvatarInto($chatUserProfileAvatar, prof.username, prof.avatar);
+  paintBanner(document.querySelector("#chatUserProfileOverlay .pc-banner") || document.querySelector(".pc-banner"), prof);
+  if (window.VUS_CHAT && window.VUS_CHAT.cosmFor) window.VUS_CHAT.cosmFor(prof.id).then(c => {
+    if ($chatUserProfileName.textContent !== prof.username) return;
+    window.VUS_CHAT.applyRingTo($chatUserProfileAvatar, c.ring, c.rfx);
+    if (c.tag) { const te = window.VUS_CHAT.tagEl(c.tag); if (te) $chatUserProfileRoles.appendChild(te); }
+  });
+  fillRoles($chatUserProfileRoles, prof.id);
+  { // Possible alts: other accounts that have logged in from the same browser (last 30 days)
+    let box = document.getElementById("chatUserProfileAlts");
+    if (!box) {
+      box = h("div", { id: "chatUserProfileAlts", className: "pc-alts" });
+      const anchor = document.getElementById("chatUserProfileSeen");
+      if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(box, anchor.nextSibling); else $chatUserProfileRoles.parentNode.appendChild(box);
+    }
+    box.style.display = "none"; box.replaceChildren();
+    if (window.VUS_CHAT && window.VUS_CHAT.possibleAlts) window.VUS_CHAT.possibleAlts(String(prof.id)).then(async ids => {
+      if (!ids.length || $chatUserProfileName.textContent !== prof.username) return;
+      const names = await Promise.all(ids.slice(0, 6).map(async id => { const k = await accountKeyForLoginId(id); const p2 = k ? await fetchAccountProfile(k) : null; return p2 ? p2.username + " (#" + id + ")" : "#" + id; }));
+      if ($chatUserProfileName.textContent !== prof.username) return;
+      box.textContent = "Possible alts: " + names.join(", ") + (ids.length > 6 ? " +" + (ids.length - 6) + " more" : "");
+      box.title = "Accounts that have logged in from the same browser in the last 30 days. It can also be family or a shared computer.";
+      box.style.display = "block";
+    }).catch(() => {});
+  }
+  isVerifiedLoginId(prof.id).then(v => {
+    if (!v || $chatUserProfileName.textContent !== prof.username) return;
+    $chatUserProfileRoles.appendChild(h("span", { className: "verified-tag in-card" }, "\u2713 Verified"));
+  });
+  { // Joined date: stamped by the database when the account was made, and the rules never let it change.
+    const j = document.getElementById("chatUserProfileJoined");
+    if (j && Number(prof.createdAt) > 86400000) {
+      j.textContent = "Joined: " + new Date(Number(prof.createdAt)).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+      j.style.display = "block";
+    }
+  }
+  { // Last seen: "Online now" while their account is on the online list, otherwise when they were last around.
+    const sn = document.getElementById("chatUserProfileSeen");
+    if (sn) {
+      const key = accountKey;
+      const paint = () => {
+        const on = latestPresenceAccountKeys.has(key);
+        const ts = Number(prof.lastSeen) || 0;
+        let txt = "";
+        if (on) txt = latestAfkKeys.has(key) ? "Last seen: online now (away)" : "Last seen: online now";
+        else if (ts > 86400000) txt = "Last seen: " + ago(ts);
+        else txt = "Last seen: a long time ago";
+        sn.textContent = txt;
+        sn.title = ts > 86400000 ? new Date(ts).toLocaleString() : "";
+        sn.classList.toggle("on", on);
+        sn.style.display = "block";
+      };
+      paint();
+      usersRef.child(key).child("lastSeen").get().then(snap => { if (snap.exists()) { prof.lastSeen = snap.val(); if ($chatUserProfileName.textContent === prof.username) paint(); } }).catch(() => {});
+    }
+  }
+  if (prof.bio) { $chatUserProfileBio.textContent = prof.bio; $chatUserProfileBioWrap.style.display = "block"; }
+  if (mzkSourceOf(prof) && $chatUserProfileOverlay.style.display === "flex") profileSongUnsub = mountSong($chatUserProfileSong, mzkSourceOf(prof));
+
+  if (accountKey !== currentSession.accountKey) {
+    setupProfileMute(prof);
+    renderStaffActions(prof);
+    if (!(currentUserData && currentUserData.blockedUsers && currentUserData.blockedUsers[accountKey])) {
+      $chatUserProfileMsgBtn.style.display = "inline-block";
+      $chatUserProfileMsgBtn.onclick = () => {
+        $chatUserProfileCloseBtn.click();
+        openDmSidebar("chats");
+        openChatWith(accountKey, prof.username);
+      };
+    }
+  }
+  if (accountKey === currentSession.accountKey) {
+    $chatUserProfileStatus.textContent = "That's you.";
+    $chatUserProfileAddBtn.style.display = "inline-block";
+    $chatUserProfileAddBtn.disabled = false;
+    $chatUserProfileAddBtn.textContent = "Edit profile";
+    $chatUserProfileAddBtn.onclick = (ev) => { ev.stopPropagation(); $chatUserProfileCloseBtn.click(); openProfilePopover(); };
+    return;
+  }
+  const status = getRelationshipStatus(accountKey);
+  if (status === "friends") $chatUserProfileStatus.textContent = "Already friends.";
+  else if (status === "outgoing") $chatUserProfileStatus.textContent = "Friend request pending.";
+  else if (status === "incoming") $chatUserProfileStatus.textContent = "They've sent you a request — check Find in DMs.";
+  else {
+    $chatUserProfileAddBtn.style.display = "inline-block";
+    $chatUserProfileAddBtn.disabled = false;
+    $chatUserProfileAddBtn.textContent = "Add Friend";
+    $chatUserProfileAddBtn.onclick = async () => {
+      $chatUserProfileAddBtn.disabled = true;
+      $chatUserProfileAddBtn.textContent = "Sending…";
+      const result = await sendFriendRequest(accountKey, prof.username);
+      if (result.ok) {
+        $chatUserProfileStatus.style.color = "#4ade80";
+        $chatUserProfileStatus.textContent = "Friend request sent.";
+        $chatUserProfileAddBtn.style.display = "none";
+      } else {
+        $chatUserProfileStatus.style.color = "";
+        $chatUserProfileStatus.textContent = result.error;
+        $chatUserProfileAddBtn.disabled = false;
+        $chatUserProfileAddBtn.textContent = "Add Friend";
+      }
+    };
+  }
+}
+
+// Clicking a name or picture in chat. Chat messages carry the sender's 6-digit
+// account ID (loginId), so we resolve the account fresh from it -- this works even
+// if the sender has gone offline or since changed their chat name.
+async function openChatUserProfile(loginId, nameAtSendTime) {
+  resetProfileCard();
+  if (!currentSession) { $chatUserProfileName.textContent = nameAtSendTime || "Unknown"; $chatUserProfileStatus.textContent = "Log in to add friends."; return; }
+  if (!loginId) { $chatUserProfileName.textContent = nameAtSendTime || "Unknown"; $chatUserProfileStatus.textContent = "This message is too old to look up an account for."; return; }
+  const accountKey = await accountKeyForLoginId(loginId);
+  const prof = accountKey ? await fetchAccountProfile(accountKey) : null;
+  if (!prof) {
+    profileGone(nameAtSendTime);
+    return;
+  }
+  fillProfileCard(prof, accountKey);
+}
+
+// Same card, opened from a DM / group message (we already know the account).
+async function openAccountProfile(accountKey, nameFallback) {
+  resetProfileCard();
+  if (!currentSession) return;
+  const prof = await fetchAccountProfile(accountKey);
+  if (!prof) { profileGone(nameFallback); return; }
+  fillProfileCard(prof, accountKey);
+}
+
+window.VUS_DM = {
+  setAfk: setDmAfk,
+  openChatUserProfile,
+  getAvatarByLoginId,
+  verifySender,
+  watchSongByLoginId,
+  getAccountCreatedAt: async (loginId) => {
+    const key = await accountKeyForLoginId(loginId);
+    const prof = key ? await fetchAccountProfile(key) : null;
+    return prof ? prof.createdAt : 0;
+  },
+  searchUsernames: async (q) => { try { return (await searchByUsernamePrefix(q)).map(a => ({ username: a.username, id: a.id })); } catch (e) { return []; } },
+  isVerified: isVerifiedLoginId,
+  verifiedCached,
+  getSession: () => currentSession ? { accountKey: currentSession.accountKey, username: currentSession.username, id: currentSession.id } : null,
+  logout: () => doLogout()
+};
+
+init();
+
+})();
