@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#101426">
+<title>My OS Launcher</title>
+<style>
+:root{color-scheme:dark;font-family:Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif}
+*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;color:#f4f6ff;background:radial-gradient(ellipse at 18% 12%,#35406d 0,transparent 38%),radial-gradient(ellipse at 85% 90%,#263d59 0,transparent 42%),#0b1020}
+main{width:min(520px,100%);padding:32px;border:1px solid #ffffff24;border-radius:28px;background:#ffffff0d;backdrop-filter:blur(24px);box-shadow:0 28px 90px #0008}
+.logo{width:58px;height:58px;display:grid;place-items:center;border-radius:19px;background:linear-gradient(145deg,#a5b4fc,#6478e8);color:#101426;font-size:30px;font-weight:800;box-shadow:0 10px 30px #6478e855}
+h1{font-size:28px;letter-spacing:-1px;margin:22px 0 8px}p{color:#aab4d0;line-height:1.55;margin:0 0 22px}
+button{width:100%;border:0;border-radius:14px;padding:15px 18px;background:linear-gradient(135deg,#a5b4fc,#7286f0);color:#11172b;font-weight:800;font-size:15px;cursor:pointer}
+button:disabled{opacity:.55;cursor:wait}.status{margin-top:16px;min-height:20px;font-size:13px;color:#b7c2df}.hint{font-size:12px;color:#7f8aa9;margin-top:18px}
+a{color:#c3ceff}
+</style>
+</head>
+<body>
+<main>
+<div class="logo">◈</div>
+<h1>My OS</h1>
+<p>Launch the latest version directly from GitHub in a clean <code>about:blank</code> tab. The launcher fetches the desktop files each time, so updates to the repository are picked up automatically.</p>
+<button id="launch">Launch My OS ↗</button>
+<div class="status" id="status" role="status">Ready to launch · GitHub main branch</div>
+<div class="hint">Allow pop-ups for this page. The new tab needs to stay open while the OS is running.</div>
+</main>
+<script>
+(() => {
+  const OWNER = "weirdsimplegames";
+  const REPO = "My-os";
+  const BRANCH = "main";
+  const RAW = `https://raw.githubusercontent.com/${OWNER}/${REPO}/${BRANCH}/`;
+  const button = document.getElementById("launch");
+  const status = document.getElementById("status");
+
+  button.addEventListener("click", async () => {
+    // Open synchronously from the click so popup blockers do not discard it.
+    const win = window.open("about:blank", "_blank");
+    if (!win) {
+      status.textContent = "Pop-up blocked. Allow pop-ups, then try again.";
+      return;
+    }
+    button.disabled = true;
+    status.textContent = "Connecting to GitHub…";
+    try {
+      const response = await fetch(RAW + "index.html", { cache: "no-store" });
+      if (!response.ok) throw new Error("GitHub returned " + response.status);
+      let html = await response.text();
+
+      // Make relative stylesheet, script, and lazy-loaded app paths resolve to
+      // this repository's raw files, even though the document lives at about:blank.
+      const base = '<base href="' + RAW + '">';
+      if (/<head[^>]*>/i.test(html)) html = html.replace(/<head([^>]*)>/i, match => match + base);
+      else html = base + html;
+
+      // Avoid leaving a half-loaded blank tab if a later resource fails.
+      win.document.open();
+      win.document.write(html);
+      win.document.close();
+      status.textContent = "OS page opened. Loading desktop resources from GitHub…";
+    } catch (error) {
+      win.document.open();
+      win.document.write('<!doctype html><title>My OS could not load</title><body style="font:16px system-ui;background:#101426;color:white;padding:32px"><h2>Could not load My OS</h2><p>' + String(error.message).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])) + '</p><p>Check your connection and confirm the repository contains index.html, src/app.js, and src/styles.css.</p><a style="color:#a5b4fc" href="' + RAW + '">Open GitHub source</a></body>');
+      win.document.close();
+      status.textContent = "Launch failed: " + error.message;
+    } finally {
+      button.disabled = false;
+    }
+  });
+})();
+</script>
+</body>
+</html>
