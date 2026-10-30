@@ -1,2 +1,57 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>My OS Launcher</title><style>*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:radial-gradient(ellipse at 20% 10%,#34416e,#11172b 65%);color:#f7f8ff;font:15px system-ui,sans-serif}.card{width:min(420px,calc(100% - 32px));padding:30px;border:1px solid #ffffff30;border-radius:26px;background:#ffffff12;backdrop-filter:blur(24px);box-shadow:0 24px 80px #0006;text-align:center}h1{margin:0 0 8px;font-size:27px}p{color:#c1c9e2;line-height:1.5}button{margin-top:14px;width:100%;padding:14px;border:0;border-radius:14px;background:#9aaaff;color:#10162c;font-weight:700;font-size:15px;cursor:pointer}button:disabled{opacity:.6;cursor:wait}#status{min-height:22px;margin-top:15px;font-size:13px;color:#d7def7}</style></head><body><main class="card"><h1>My OS</h1><p>Launch the latest version directly from GitHub in a clean about:blank tab.</p><button id="launch">Launch My OS</button><div id="status">Ready</div></main><script>const RAW='https://raw.githubusercontent.com/weirdsimplegames/My-os/main/index.html';const button=document.getElementById('launch'),status=document.getElementById('status');button.addEventListener('click',async()=>{const tab=window.open('about:blank','_blank');if(!tab){status.textContent='Popup blocked. Allow pop-ups for this page and try again.';return}button.disabled=true;status.textContent='Fetching the latest OS from GitHub…';try{const response=await fetch(RAW+'?t='+Date.now(),{cache:'no-store'});if(!response.ok)throw new Error('GitHub returned HTTP '+response.status);let html=await response.text();const base='<base href="https://raw.githubusercontent.com/weirdsimplegames/My-os/main/">';if(/<head[^>]*>/i.test(html))html=html.replace(/<head([^>]*)>/i,'<head$1>'+base);else html=base+html;tab.document.open();tab.document.write(html);tab.document.close();status.textContent='My OS opened in a new tab.'}catch(error){tab.document.open();tab.document.write('<!doctype html><title>My OS failed to load</title><body style="font:16px system-ui;padding:32px;background:#11172b;color:white"><h2>Could not load My OS</h2><p>'+String(error.message).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))+'</p><p>Check that the OS files are present in the GitHub repository.</p></body>');tab.document.close();status.textContent='Could not fetch the OS.'}finally{button.disabled=false}});</script></body></html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#101426">
+<title>My OS Launcher</title>
+<style>
+*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;color:#f4f6ff;background:radial-gradient(ellipse at 18% 12%,#35406d 0,transparent 38%),radial-gradient(ellipse at 85% 90%,#263d59 0,transparent 42%),#0b1020;font:15px system-ui,sans-serif}
+main{width:min(480px,100%);padding:30px;border:1px solid #ffffff24;border-radius:26px;background:#ffffff0d;backdrop-filter:blur(24px);box-shadow:0 28px 90px #0008}
+.logo{width:54px;height:54px;display:grid;place-items:center;border-radius:18px;background:linear-gradient(145deg,#a5b4fc,#6478e8);color:#101426;font-size:29px;font-weight:800}
+h1{font-size:27px;margin:20px 0 8px}p{color:#aab4d0;line-height:1.55;margin:0 0 20px}
+button{width:100%;border:0;border-radius:14px;padding:15px;background:linear-gradient(135deg,#a5b4fc,#7286f0);color:#11172b;font-weight:800;font-size:15px;cursor:pointer}button:disabled{opacity:.55;cursor:wait}
+#status{margin-top:15px;min-height:20px;font-size:13px;color:#b7c2df}.hint{font-size:12px;color:#7f8aa9;margin-top:16px}
+</style>
+</head>
+<body>
+<main>
+<div class="logo">◈</div>
+<h1>My OS Launcher</h1>
+<p>Fetches the OS directly from the <b>os/</b> folder in GitHub and opens it in a clean <code>about:blank</code> tab.</p>
+<button id="launch">Launch My OS ↗</button>
+<div id="status" role="status">Ready · GitHub main branch</div>
+<div class="hint">Allow pop-ups for this launcher. The new tab loads the OS files directly from GitHub.</div>
+</main>
+<script>
+(() => {
+  const RAW = "https://raw.githubusercontent.com/weirdsimplegames/My-os/main/os/";
+  const button = document.getElementById("launch");
+  const status = document.getElementById("status");
+  button.addEventListener("click", async () => {
+    const tab = window.open("about:blank", "_blank");
+    if (!tab) { status.textContent = "Pop-up blocked. Allow pop-ups, then try again."; return; }
+    button.disabled = true;
+    status.textContent = "Fetching os/index.html from GitHub…";
+    try {
+      const response = await fetch(RAW + "index.html?cache=" + Date.now(), {cache:"no-store"});
+      if (!response.ok) throw new Error("GitHub returned HTTP " + response.status);
+      let html = await response.text();
+      const base = '<base href="' + RAW + '">';
+      if (/<head[^>]*>/i.test(html)) html = html.replace(/<head[^>]*>/i, match => match + base);
+      else html = base + html;
+      tab.document.open();
+      tab.document.write(html);
+      tab.document.close();
+      status.textContent = "OS loaded from GitHub. You can use the new tab now.";
+    } catch (error) {
+      tab.document.open();
+      tab.document.write('<!doctype html><title>My OS could not load</title><body style="font:16px system-ui;background:#101426;color:white;padding:32px"><h2>Could not load My OS</h2><p>' + String(error.message).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])) + '</p><p>Check your connection and confirm that os/index.html and the os/src and os/apps folders exist.</p></body>');
+      tab.document.close();
+      status.textContent = "Launch failed: " + error.message;
+    } finally { button.disabled = false; }
+  });
+})();
+</script>
+</body>
+</html>
