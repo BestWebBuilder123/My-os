@@ -214,3 +214,5 @@ input,textarea,[contenteditable=true],#vs-code{user-select:text;-webkit-user-sel
 .light-theme .browser-tabs,.light-theme .browser-toolbar,.light-theme .browser-status{background:#e4eaf4;color:#26344c}
 .light-theme .browser-tab{color:#34425a}.light-theme .browser-tab.active{background:#fff;color:#202b40}
 @media(max-width:600px){.browser-app{margin:-12px}.browser-toolbar{gap:2px;padding:6px}.browser-toolbar>button{width:28px}.browser-shortcuts{padding:5px}.browser-home{padding:14px}.browser-home h2{font-size:21px}}
+
+.browser-toolbar>.browser-external-button{width:auto;min-width:max-content;padding:6px 10px;font-size:10px;border-radius:9px;background:var(--accent);color:#111827;font-weight:700}.browser-message{z-index:2}.browser-message button{font-size:10px}
