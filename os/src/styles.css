@@ -293,3 +293,22 @@ input,textarea,[contenteditable=true],#vs-code{user-select:text;-webkit-user-sel
 .games-tabs button.active{background:color-mix(in srgb,var(--accent) 28%,transparent);border-color:color-mix(in srgb,var(--accent) 55%,transparent)}
 .games-toolbar,.game-controls,.rps-actions{display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap;margin:12px auto}
 .games-toolbar{justify-content:space-between;color:var(--muted,#9eacc4);font-size:12px}.snake-grid,.mine-grid{display:grid;grid-template-columns:repeat(10,minmax(0,1fr));gap:3px;width:min(100%,360px);margin:12px auto}.snake-grid span{aspect-ratio:1;border-radius:4px;background:#ffffff0d}.snake-grid .snake-body{background:#4d9b79}.snake-grid .snake-head{background:#9be0a5}.snake-grid .snake-food{color:#ff7d86;font-size:20px}.mine-grid{grid-template-columns:repeat(8,minmax(0,1fr));width:min(100%,340px)}.mine-grid button{aspect-ratio:1;padding:0;border-radius:5px;background:#ffffff1a;font-size:clamp(10px,2vw,17px)}.rps-actions button{min-width:100px}
+
+
+/* Games Hub: real browser-game directory */
+.external-game-library{display:grid;gap:12px;margin:4px 0 18px;padding:14px;border:1px solid #ffffff18;border-radius:15px;background:#ffffff06}
+.game-library-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.game-library-head h3{margin:0 0 4px;font-size:16px}
+.game-library-head p{margin:0;color:var(--muted,#9eacc4);font-size:11px}
+.game-library-head input{min-width:150px;max-width:220px}
+.external-game-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,245px),1fr));gap:9px}
+.external-game-card{display:grid;grid-template-columns:34px minmax(0,1fr) auto;align-items:center;gap:9px;padding:10px;border:1px solid #ffffff16;border-radius:12px;background:#ffffff08;min-width:0}
+.external-game-icon{display:grid;place-items:center;width:32px;height:32px;border-radius:9px;background:#ffffff12}
+.external-game-info{min-width:0}
+.external-game-info b,.external-game-info small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.external-game-info b{font-size:12px}
+.external-game-info small,.external-game-info p{font-size:10px;color:var(--muted,#9eacc4)}
+.external-game-info p{margin:4px 0 0;line-height:1.35}
+.external-game-card>button{white-space:nowrap;padding:7px 10px;font-size:11px;background:color-mix(in srgb,var(--accent) 20%,transparent);border:1px solid color-mix(in srgb,var(--accent) 38%,transparent)}
+.game-empty{grid-column:1/-1;text-align:center;padding:12px}
+@media(max-width:560px){.game-library-head{align-items:stretch}.game-library-head input{max-width:none;width:100%}.external-game-card{grid-template-columns:30px minmax(0,1fr) auto;padding:8px}.external-game-info p{display:none}}
