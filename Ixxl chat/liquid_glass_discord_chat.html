@@ -1791,19 +1791,15 @@
         const r=event.currentTarget.getBoundingClientRect();
         window.openRoomContextMenu({preventDefault(){},stopPropagation(){},clientX:r.right-8,clientY:r.bottom+4},channelId);
       };
-      // Handle right-button mouse presses inside the embedded chat iframe.
-      // mousedown is more reliable than pointerdown in some embedded webviews.
-      const handleRoomRightClick=e=>{
-        if(e.type!=='contextmenu'&&e.button!==2)return;
+      // Open the room actions menu only after a deliberate double-click.
+      document.addEventListener('dblclick',e=>{
         const target=e.target instanceof Element?e.target:e.target?.parentElement;
         const row=target?.closest('[data-room-context]');
         if(!row)return;
         e.preventDefault();
-        e.stopImmediatePropagation();
+        e.stopPropagation();
         window.openRoomContextMenu(e,row.dataset.roomContext);
-      };
-      document.addEventListener('mousedown',handleRoomRightClick,true);
-      document.addEventListener('contextmenu',handleRoomRightClick,true);
+      },true);
       document.addEventListener('click',e=>{if(!e.target.closest('#room-context-menu')&&!e.target.closest('[data-room-context]'))$('room-context-menu')?.classList.add('hidden');});
       document.addEventListener('keydown',e=>{if(e.key==='Escape')$('room-context-menu')?.classList.add('hidden');});
       window.copyRoomId=async(id)=>{try{await navigator.clipboard.writeText(id);showSafeToast('Room ID copied.','success');}catch(e){showSafeToast('Could not copy room ID.','error');}$('room-context-menu')?.classList.add('hidden');};
