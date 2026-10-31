@@ -617,7 +617,7 @@
                 </span>
                 <button id="server-dropdown-trigger" type="button" aria-label="Open server menu" aria-haspopup="true" aria-expanded="false" onclick="toggleServerDropdown(event)" class="text-slate-400 hover:text-white transition p-2 -mr-2 rounded-lg hover:bg-white/10"><i class="fa-solid fa-chevron-down text-xs"></i></button>
             </div>
-            <div id="server-dropdown-menu" class="hidden absolute z-[1000] mt-1 ml-3 w-60 glass-panel border border-white/15 rounded-xl shadow-2xl p-1.5">
+            <div id="server-dropdown-menu" class="hidden fixed z-[999999] min-w-52 glass-panel border border-white/15 rounded-xl shadow-2xl p-1">
                 <div id="server-dropdown-menu-content"></div>
             </div>
 
@@ -1535,8 +1535,8 @@
         const server=serverCache.get(activeServerId);
         if(!server){showSafeToast('Choose a server first.','error');return;}
         const isOwner=server.owner_id===signedInUser?.id;
-        const item=(label,icon,action)=>'<button type="button" onclick="'+action+'" class="w-full flex items-center gap-2 px-3 py-2.5 rounded-lg text-left text-xs font-semibold text-slate-200 hover:text-white hover:bg-white/10 transition"><i class="fa-solid '+icon+' w-4 text-slate-400"></i><span>'+label+'</span></button>';
-        let html='<div class="px-3 py-2 mb-1 border-b border-white/10"><div class="text-[10px] uppercase tracking-wider text-slate-500 font-bold">Server menu</div><div class="text-sm font-bold text-white truncate">'+esc(server.name)+'</div></div>';
+        const item=(label,icon,action,danger=false)=>'<button type="button" onclick="'+action+'" class="w-full text-left px-3 py-2 rounded-lg text-xs '+(danger?'text-rose-300 hover:bg-rose-500/10':'text-slate-200 hover:bg-white/10')+'"><i class="fa-solid '+icon+' w-5"></i>'+label+'</button>';
+        let html='';
         if(isOwner){
           html+=item('Server settings','fa-gear',"closeServerDropdown();updateCommunityServer()");
           html+=item('Add channel','fa-plus',"closeServerDropdown();addCommunityChannel()");
@@ -1552,8 +1552,11 @@
         trigger.setAttribute('aria-expanded','true');
         const r=trigger.getBoundingClientRect();
         menu.style.position='fixed';
-        menu.style.left=Math.max(8,Math.min(r.left,window.innerWidth-248))+'px';
-        menu.style.top=Math.min(window.innerHeight-menu.offsetHeight-8,r.bottom+6)+'px';
+        menu.style.zIndex='999999';
+        requestAnimationFrame(()=>{
+          menu.style.left=Math.max(8,Math.min(r.left,window.innerWidth-menu.offsetWidth-8))+'px';
+          menu.style.top=Math.max(8,Math.min(r.bottom+4,window.innerHeight-menu.offsetHeight-8))+'px';
+        });
       };
       window.copyServerInviteCode=async()=>{
         const server=serverCache.get(activeServerId);
