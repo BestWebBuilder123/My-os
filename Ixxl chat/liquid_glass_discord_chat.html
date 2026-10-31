@@ -1532,7 +1532,7 @@
         const server=serverCache.get(activeServerId);
         if(!server){showSafeToast('Choose a server first.','error');return;}
         const isOwner=server.owner_id===signedInUser?.id;
-        const item=(label,icon,action,danger=false)=>'<button type="button" onclick="'+action+'" class="w-full text-left px-3 py-2 rounded-lg text-xs '+(danger?'text-rose-300 hover:bg-rose-500/10':'text-slate-200 hover:bg-white/10')+'"><i class="fa-solid '+icon+' w-5"></i>'+label+'</button>';
+        const item=(label,icon,action,danger=false)=>'<button type="button" onclick="'+action+'" class="w-full text-left px-3 py-2 rounded-lg text-xs whitespace-normal break-words '+(danger?'text-rose-300 hover:bg-rose-500/10':'text-slate-200 hover:bg-white/10')+'"><i class="fa-solid '+icon+' w-5"></i>'+label+'</button>';
         let html='';
         if(isOwner){
           html+=item('Server settings','fa-gear',"closeServerDropdown();updateCommunityServer()");
@@ -1546,9 +1546,9 @@
         if(!isOwner&&!server.invite_code) html+='<div class="px-3 py-3 text-xs text-slate-400">No server actions available.</div>';
         menu.innerHTML=html;
         menu.dataset.menuOwner='server';
-        menu.style.width='auto';
+        menu.style.width='10rem';
         menu.style.minWidth='0';
-        menu.style.maxWidth='min(13rem, calc(100vw - 16px))';
+        menu.style.maxWidth='min(10rem, calc(100vw - 16px))';
         menu.classList.remove('hidden');
         trigger.setAttribute('aria-expanded','true');
         const r=trigger.getBoundingClientRect();
