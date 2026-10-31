@@ -317,3 +317,14 @@ input,textarea,[contenteditable=true],#vs-code{user-select:text;-webkit-user-sel
 #timer-status{min-height:20px;text-align:center}
 .light-theme .clock-tabs button{color:#39445c}
 .light-theme .timer-inputs label{color:#53617b}
+
+
+/* User-selectable desktop wallpaper layer (kept beneath icons and windows). */
+.wallpaper-image{position:absolute;z-index:0;inset:-2%;background-position:center;background-size:cover;background-repeat:no-repeat;pointer-events:none;will-change:filter;transition:filter .18s ease}
+.wallpaper-shade{z-index:1;pointer-events:none}
+#desktop-icons{z-index:2}
+.windows{z-index:3}
+.dock,.launcher,.control-center,.notifications,.context-menu,.toast{z-index:12}
+.wallpaper-settings-preview{height:145px;width:100%;border:1px solid #ffffff30;border-radius:14px;background:linear-gradient(135deg,#10182f,#526ba0);background-position:center;background-size:cover;background-repeat:no-repeat;display:grid;place-items:center;color:#d8e1f5;font-size:12px;overflow:hidden}
+.wallpaper-upload-label{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.wallpaper-upload-label input{max-width:100%;font-size:12px}
