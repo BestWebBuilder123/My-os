@@ -1537,7 +1537,9 @@
         if(isOwner){
           html+=item('Server settings','fa-gear',"closeServerDropdown();updateCommunityServer()");
           html+=item('Add channel','fa-plus',"closeServerDropdown();addCommunityChannel()");
-          html+=item('Create @everyone ping room','fa-bullhorn',"closeServerDropdown();createPingRoom()");
+          html+=item('Ban members…','fa-user-slash',"openServerBanPicker()");
+          html+=item(server.visibility==='private'?'Make server public':'Make server private','fa-lock',"toggleServerVisibility()");
+          html+=item('Delete server','fa-trash',"deleteCommunityServer()",true);
           html+=item('Upload server image','fa-image',"closeServerDropdown();document.getElementById('server-icon-file')?.click()");
         }
         if(server.invite_code) html+=item('Copy invite code','fa-copy',"copyServerInviteCode()");
@@ -1548,9 +1550,70 @@
         trigger.setAttribute('aria-expanded','true');
         const r=trigger.getBoundingClientRect();
         requestAnimationFrame(()=>{
-          menu.style.left=Math.max(8,Math.min(r.right-8,window.innerWidth-menu.offsetWidth-8))+'px';
-          menu.style.top=Math.max(8,Math.min(r.bottom+4,window.innerHeight-menu.offsetHeight-8))+'px';
+          const left=Math.max(8,Math.min(r.right-menu.offsetWidth,window.innerWidth-menu.offsetWidth-8));
+          const below=r.bottom+6;
+          const top=below+menu.offsetHeight<=window.innerHeight-8?below:Math.max(8,r.top-menu.offsetHeight-6);
+          menu.style.left=left+'px';
+          menu.style.top=top+'px';
         });
+      };
+      window.openServerBanPicker=async()=>{
+        window.closeServerDropdown();
+        const server=serverCache.get(activeServerId);
+        if(!server||server.owner_id!==signedInUser?.id){showSafeToast('Only the server owner can manage members.','error');return;}
+        try{
+          const {data:members,error}=await supabase.from('vus_server_members').select('user_id').eq('server_id',server.id);
+          if(error)throw error;
+          const ids=(members||[]).map(m=>m.user_id).filter(id=>id!==signedInUser.id);
+          const {data:profiles,error:profileError}=await supabase.from('vus_profiles').select('id,username,display_name,rank,avatar_url').in('id',ids);
+          if(profileError)throw profileError;
+          const eligible=(profiles||[]).filter(p=>p.rank!=='owner');
+          const modal=document.createElement('div');
+          modal.id='server-ban-picker';
+          modal.className='fixed inset-0 z-[1000000] flex items-center justify-center bg-black/70 p-4';
+          modal.innerHTML='<div class="glass-panel border border-white/15 rounded-2xl shadow-2xl w-full max-w-lg max-h-[85vh] flex flex-col overflow-hidden"><div class="p-4 border-b border-white/10"><div class="text-white font-bold text-base">Ban server members</div><p class="text-xs text-slate-400 mt-1">Choose anyone who should be kept. Everyone else will be banned from this server.</p></div><div id="server-ban-member-list" class="p-3 overflow-y-auto flex-1 space-y-1"></div><div class="p-3 border-t border-white/10 flex items-center justify-end gap-2"><button id="server-ban-cancel" class="px-3 py-2 rounded-lg text-xs text-slate-300 hover:bg-white/10">Cancel</button><button id="server-ban-confirm" class="px-3 py-2 rounded-lg text-xs font-semibold bg-rose-500/90 hover:bg-rose-500 text-white">Ban everyone else</button></div></div>';
+          document.body.appendChild(modal);
+          const list=modal.querySelector('#server-ban-member-list');
+          list.innerHTML=eligible.length?eligible.map(p=>'<label class="flex items-center gap-3 p-2 rounded-lg hover:bg-white/5 cursor-pointer"><input type="checkbox" class="server-ban-exempt accent-emerald-400 w-4 h-4" value="'+esc(p.id)+'"><span class="w-8 h-8 rounded-full bg-white/10 overflow-hidden flex items-center justify-center">'+(p.avatar_url?'<img src="'+esc(p.avatar_url)+'" class="w-full h-full object-cover">':'<i class="fa-solid fa-user text-slate-400"></i>')+'</span><span class="min-w-0 flex-1"><span class="block text-sm text-white truncate">'+esc(p.display_name||p.username||'User')+'</span><span class="block text-[10px] text-slate-500">'+esc(p.username||'')+(p.rank?' · '+esc(p.rank):'')+'</span></span><span class="text-[10px] text-emerald-300">Keep</span></label>').join(''):'<p class="text-xs text-slate-400 p-3">There are no other eligible members to ban.</p>';
+          modal.querySelector('#server-ban-cancel').onclick=()=>modal.remove();
+          modal.addEventListener('click',e=>{if(e.target===modal)modal.remove();});
+          modal.querySelector('#server-ban-confirm').onclick=async()=>{
+            const keep=[...modal.querySelectorAll('.server-ban-exempt:checked')].map(input=>input.value);
+            const total=eligible.length-keep.length;
+            if(total<=0){showSafeToast('No members selected to ban.','error');return;}
+            if(!window.confirm('Ban '+total+' member(s) from '+server.name+'? They will not be able to rejoin.'))return;
+            const reason=window.prompt('Ban reason (optional):')||'';
+            const button=modal.querySelector('#server-ban-confirm');button.disabled=true;button.textContent='Banning…';
+            try{
+              const {data,error}=await supabase.rpc('vus_owner_ban_server_members',{p_server_id:server.id,p_except_user_ids:keep,p_reason:reason});
+              if(error)throw error;
+              modal.remove();await loadServerIndex();showSafeToast((data||0)+' member(s) banned.','success');
+            }catch(error){button.disabled=false;button.textContent='Ban everyone else';showSafeToast(error?.message||'Could not ban server members.','error');}
+          };
+        }catch(error){showSafeToast(error?.message||'Could not load server members.','error');}
+      };
+      window.toggleServerVisibility=async()=>{
+        const server=serverCache.get(activeServerId);
+        if(!server||server.owner_id!==signedInUser?.id)return;
+        const next=server.visibility==='private'?'public':'private';
+        if(!window.confirm(next==='private'?'Make this server private? People will need an invite code to join.':'Make this server public? Anyone can find it by searching.'))return;
+        try{
+          const {data,error}=await supabase.rpc('vus_update_server_visibility',{p_server_id:server.id,p_visibility:next});
+          if(error)throw error;
+          await loadServerIndex();
+          showSafeToast(next==='private'?'Server is private. Invite code: '+(data||'unavailable'):'Server is public.','success');
+        }catch(error){showSafeToast(error?.message||'Could not change server visibility.','error');}
+      };
+      window.deleteCommunityServer=async()=>{
+        const server=serverCache.get(activeServerId);
+        if(!server||server.owner_id!==signedInUser?.id)return;
+        if(!window.confirm('Permanently delete "'+server.name+'" and all of its rooms and messages? This cannot be undone.'))return;
+        if(window.prompt('Type DELETE to confirm:')!=='DELETE')return;
+        try{
+          const {error}=await supabase.rpc('vus_delete_server',{p_server_id:server.id});
+          if(error)throw error;
+          activeServerId=null;await loadServerIndex();showSafeToast('Server deleted.','success');
+        }catch(error){showSafeToast(error?.message||'Could not delete server.','error');}
       };
       window.copyServerInviteCode=async()=>{
         const server=serverCache.get(activeServerId);
@@ -1821,6 +1884,7 @@
           if(!protectedRoom)html+=item('Delete room',`removeCommunityChannel('${channel.id}')`,'fa-trash',true);
         }
         menu.innerHTML=html;
+        menu.dataset.menuOwner='room';
         menu.style.position='fixed';
         menu.style.zIndex='999999';
         menu.classList.remove('hidden');
