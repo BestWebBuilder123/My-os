@@ -1777,31 +1777,33 @@
           if(!protectedRoom)html+=item('Delete room',`removeCommunityChannel('${channel.id}')`,'fa-trash',true);
         }
         menu.innerHTML=html;
-        const x=event?.clientX ?? 0, y=event?.clientY ?? 0;
-        menu.style.left=Math.max(8,Math.min(x,window.innerWidth-menu.offsetWidth-8))+'px';
-        menu.style.top=Math.max(8,Math.min(y,window.innerHeight-menu.offsetHeight-8))+'px';
+        menu.style.position='fixed';
+        menu.style.zIndex='999999';
         menu.classList.remove('hidden');
+        const x=event?.clientX ?? 8, y=event?.clientY ?? 8;
+        requestAnimationFrame(()=>{
+          menu.style.left=Math.max(8,Math.min(x,window.innerWidth-menu.offsetWidth-8))+'px';
+          menu.style.top=Math.max(8,Math.min(y,window.innerHeight-menu.offsetHeight-8))+'px';
+        });
       };
       window.openRoomActionsFromButton=(event,channelId)=>{
         event.preventDefault();event.stopPropagation();
         const r=event.currentTarget.getBoundingClientRect();
         window.openRoomContextMenu({preventDefault(){},stopPropagation(){},clientX:r.right-8,clientY:r.bottom+4},channelId);
       };
-      // Handle right-click directly inside the embedded chat. Some host windows/webviews
-      // suppress the later contextmenu event, so open the custom menu on right pointer press too.
-      document.addEventListener('pointerdown',e=>{
-        if(e.pointerType!=='mouse'||e.button!==2)return;
-        const row=e.target.closest('[data-room-context]');
-        if(row){e.preventDefault();e.stopPropagation();window.openRoomContextMenu(e,row.dataset.roomContext);}
-      },true);
-      document.addEventListener('contextmenu',e=>{
-        const row=e.target.closest('[data-room-context]');
-        if(row){e.preventDefault();e.stopPropagation();window.openRoomContextMenu(e,row.dataset.roomContext);}
-      },true);
-      document.addEventListener('dblclick',e=>{
-        const row=e.target.closest('[data-room-context]');
-        if(row){e.preventDefault();e.stopPropagation();window.openRoomContextMenu(e,row.dataset.roomContext);}
-      },true);
+      // Handle right-button mouse presses inside the embedded chat iframe.
+      // mousedown is more reliable than pointerdown in some embedded webviews.
+      const handleRoomRightClick=e=>{
+        if(e.type!=='contextmenu'&&e.button!==2)return;
+        const target=e.target instanceof Element?e.target:e.target?.parentElement;
+        const row=target?.closest('[data-room-context]');
+        if(!row)return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        window.openRoomContextMenu(e,row.dataset.roomContext);
+      };
+      document.addEventListener('mousedown',handleRoomRightClick,true);
+      document.addEventListener('contextmenu',handleRoomRightClick,true);
       document.addEventListener('click',e=>{if(!e.target.closest('#room-context-menu')&&!e.target.closest('[data-room-context]'))$('room-context-menu')?.classList.add('hidden');});
       document.addEventListener('keydown',e=>{if(e.key==='Escape')$('room-context-menu')?.classList.add('hidden');});
       window.copyRoomId=async(id)=>{try{await navigator.clipboard.writeText(id);showSafeToast('Room ID copied.','success');}catch(e){showSafeToast('Could not copy room ID.','error');}$('room-context-menu')?.classList.add('hidden');};
