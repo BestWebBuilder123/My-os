@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: myos-browser-backend
+    runtime: docker
+    plan: free
+    region: ohio
+    branch: main
+    dockerfilePath: ./browser-backend/Dockerfile
+    healthCheckPath: /health
+    envVars:
+      - key: BROWSER_API_KEY
+        sync: false
