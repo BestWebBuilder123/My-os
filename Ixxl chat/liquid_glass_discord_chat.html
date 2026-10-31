@@ -1562,12 +1562,9 @@
         const server=serverCache.get(activeServerId);
         if(!server||server.owner_id!==signedInUser?.id){showSafeToast('Only the server owner can manage members.','error');return;}
         try{
-          const {data:members,error}=await supabase.from('vus_server_members').select('user_id').eq('server_id',server.id);
+          const {data:profiles,error}=await supabase.rpc('vus_owner_list_server_members',{p_server_id:server.id});
           if(error)throw error;
-          const ids=(members||[]).map(m=>m.user_id).filter(id=>id!==signedInUser.id);
-          const {data:profiles,error:profileError}=await supabase.from('vus_profiles').select('id,username,display_name,rank,avatar_url').in('id',ids);
-          if(profileError)throw profileError;
-          const eligible=(profiles||[]).filter(p=>p.rank!=='owner');
+          const eligible=(profiles||[]).filter(p=>p.id!==signedInUser.id&&p.rank!=='owner');
           const modal=document.createElement('div');
           modal.id='server-ban-picker';
           modal.className='fixed inset-0 z-[1000000] flex items-center justify-center bg-black/70 p-4';
