@@ -42,6 +42,7 @@ app.post("/api/sessions",async(_req,res)=>{
   if(sessions.size>=5)return res.status(429).json({error:"Browser is busy."});
   const context=await (await getBrowser()).newContext({viewport:{width:1280,height:800}});
   const page=await context.newPage();
+  await page.route("**/*",async route=>{try{publicUrl(route.request().url());await route.continue();}catch{await route.abort().catch(()=>{});}});
   const id=crypto.randomBytes(24).toString("hex");
   sessions.set(id,{context,page,used:Date.now()});
   res.json({id});
