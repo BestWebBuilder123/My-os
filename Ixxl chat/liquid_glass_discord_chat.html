@@ -615,7 +615,10 @@
                 <span id="subsidebar-title" class="truncate text-base tracking-wide flex items-center gap-2">
                     <i class="fa-solid fa-shield-halved text-accent"></i> Ixxl Chat
                 </span>
-                <button class="text-slate-400 hover:text-white transition"><i class="fa-solid fa-chevron-down text-xs"></i></button>
+                <button id="server-dropdown-trigger" type="button" aria-label="Open server menu" aria-haspopup="true" aria-expanded="false" onclick="toggleServerDropdown(event)" class="text-slate-400 hover:text-white transition p-2 -mr-2 rounded-lg hover:bg-white/10"><i class="fa-solid fa-chevron-down text-xs"></i></button>
+            </div>
+            <div id="server-dropdown-menu" class="hidden absolute z-[1000] mt-1 ml-3 w-60 glass-panel border border-white/15 rounded-xl shadow-2xl p-1.5">
+                <div id="server-dropdown-menu-content"></div>
             </div>
 
             <input id="server-icon-file" type="file" accept="image/png,image/jpeg,image/webp,image/gif" class="hidden" onchange="uploadCommunityServerIcon(event)">
@@ -1519,6 +1522,50 @@
       window.joinPublicServer=async(serverName)=>{try{const {data,error}=await supabase.rpc('vus_join_server',{p_code_or_name:serverName});if(error)throw error;await loadServerIndex();await window.switchCommunityServer(data);showSafeToast('Joined server.','success');}catch(error){showSafeToast(error?.message||'Could not join server.','error');}};
       $('room-code-input')?.addEventListener('input',event=>{clearTimeout(serverSearchTimer);serverSearchTimer=setTimeout(()=>searchPublicServers(event.target.value),220);});
       window.renderJoinedRooms = renderJoinedRoomsOnline;
+
+      window.closeServerDropdown=()=>{
+        $('server-dropdown-menu')?.classList.add('hidden');
+        $('server-dropdown-trigger')?.setAttribute('aria-expanded','false');
+      };
+      window.toggleServerDropdown=(event)=>{
+        event?.preventDefault();event?.stopPropagation();
+        const menu=$('server-dropdown-menu'),trigger=$('server-dropdown-trigger');
+        if(!menu||!trigger)return;
+        if(!menu.classList.contains('hidden')){window.closeServerDropdown();return;}
+        const server=serverCache.get(activeServerId);
+        if(!server){showSafeToast('Choose a server first.','error');return;}
+        const isOwner=server.owner_id===signedInUser?.id;
+        const item=(label,icon,action)=>'<button type="button" onclick="'+action+'" class="w-full flex items-center gap-2 px-3 py-2.5 rounded-lg text-left text-xs font-semibold text-slate-200 hover:text-white hover:bg-white/10 transition"><i class="fa-solid '+icon+' w-4 text-slate-400"></i><span>'+label+'</span></button>';
+        let html='<div class="px-3 py-2 mb-1 border-b border-white/10"><div class="text-[10px] uppercase tracking-wider text-slate-500 font-bold">Server menu</div><div class="text-sm font-bold text-white truncate">'+esc(server.name)+'</div></div>';
+        if(isOwner){
+          html+=item('Server settings','fa-gear',"closeServerDropdown();updateCommunityServer()");
+          html+=item('Add channel','fa-plus',"closeServerDropdown();addCommunityChannel()");
+          html+=item('Create @everyone ping room','fa-bullhorn',"closeServerDropdown();createPingRoom()");
+          html+=item('Upload server image','fa-image',"closeServerDropdown();document.getElementById('server-icon-file')?.click()");
+        }
+        if(server.invite_code){
+          html+=item('Copy invite code','fa-copy',"copyServerInviteCode()");
+        }
+        if(!isOwner&&!server.invite_code) html+='<div class="px-3 py-3 text-xs text-slate-400">No server actions available.</div>';
+        $('server-dropdown-menu-content').innerHTML=html;
+        menu.classList.remove('hidden');
+        trigger.setAttribute('aria-expanded','true');
+        const r=trigger.getBoundingClientRect();
+        menu.style.position='fixed';
+        menu.style.left=Math.max(8,Math.min(r.left,window.innerWidth-248))+'px';
+        menu.style.top=Math.min(window.innerHeight-menu.offsetHeight-8,r.bottom+6)+'px';
+      };
+      window.copyServerInviteCode=async()=>{
+        const server=serverCache.get(activeServerId);
+        if(!server?.invite_code)return;
+        try{await navigator.clipboard.writeText(server.invite_code);showSafeToast('Invite code copied.','success');}
+        catch(e){showSafeToast('Could not copy invite code.','error');}
+        window.closeServerDropdown();
+      };
+      document.addEventListener('click',e=>{
+        if(!e.target.closest('#server-dropdown-menu')&&!e.target.closest('#server-dropdown-trigger'))window.closeServerDropdown();
+      });
+      document.addEventListener('keydown',e=>{if(e.key==='Escape')window.closeServerDropdown();});
 
       function renderSubSidebarOnline() {
         const title = $('subsidebar-title');
