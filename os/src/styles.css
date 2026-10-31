@@ -194,7 +194,7 @@ input,textarea,[contenteditable=true],#vs-code{user-select:text;-webkit-user-sel
 .browser-shortcuts{display:flex;align-items:center;gap:5px;padding:6px 10px;background:#ffffff06;border-bottom:1px solid #ffffff12;overflow-x:auto}
 .browser-shortcuts button{padding:5px 9px;font-size:10px;white-space:nowrap;background:#ffffff09}
 .browser-view{position:relative;flex:1;min-height:0;background:#fff;overflow:auto}
-.browser-view iframe{display:block;width:100%;height:100%;min-height:100%;border:0;border-radius:0;background:#fff}
+.browser-view #browser-frame{display:block;width:100%;height:100%;min-height:100%;object-fit:contain;border:0;border-radius:0;background:#fff;outline:none;cursor:crosshair}.browser-view #browser-frame.hidden{display:none}.browser-remote-hint{position:absolute;left:10px;bottom:9px;padding:5px 8px;border-radius:7px;background:#101827bb;color:#dce5f8;font-size:9px;pointer-events:none;opacity:.8}
 .browser-home{height:100%;min-height:300px;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px;text-align:center;background:radial-gradient(ellipse at 50% 35%,#8799ff35,transparent 55%),#111a2c;color:#f6f7ff}
 .browser-home-mark{font-size:42px;color:#aab7ff}
 .browser-home h2{margin:10px 0 4px;font-size:25px}
