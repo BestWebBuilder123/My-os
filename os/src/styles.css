@@ -261,6 +261,10 @@ input,textarea,[contenteditable=true],#vs-code{user-select:text;-webkit-user-sel
 @media(max-width:650px){.browser-app{padding:8px}.browser-address-row{gap:4px}.browser-nav button,.browser-address-row>button{width:28px;height:30px}.browser-address input{font-size:11px}.browser-brand{font-size:11px}}
 
 
+/* Keep Code Studio inside the window content so it cannot cover the draggable title bar or resize grip. */
+.window[data-app="code-editor"] .window-content{padding:0;overflow:hidden;display:flex;min-height:0}
+.window[data-app="code-editor"] .code-studio{margin:0;flex:1;min-width:0;min-height:0;height:100%}
+
 /* Dedicated VS Code-inspired Code Studio */
 .code-studio{height:100%;min-height:380px;margin:-18px;display:flex;flex-direction:column;overflow:hidden;background:rgba(15,20,32,.96);color:#dce5f5;font:12px Inter,system-ui,sans-serif;border-radius:inherit;--cs-line:#ffffff12;--cs-panel:rgba(25,32,48,.94);--cs-muted:#8492a8}
 .cs-titlebar{height:42px;min-height:42px;display:flex;align-items:center;gap:12px;padding:0 10px;background:rgba(29,37,54,.86);border-bottom:1px solid var(--cs-line);backdrop-filter:blur(24px)}
