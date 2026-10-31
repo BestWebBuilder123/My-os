@@ -288,7 +288,7 @@
                             <div class="flex justify-between items-center pt-3">
                                 <div>
                                     <div class="text-xs font-semibold text-white">Auto-download videos</div>
-                                    <div class="text-[11px] text-slate-400">Videos over 5 seconds wait for a click unless this is on. Short ones always load by themselves.</div>
+                                    <div class="text-[11px] text-slate-400">Automatically display uploaded images and animated GIFs in chat messages.</div>
                                 </div>
                                 <input type="checkbox" id="toggle-autovideo" class="accent-emerald-500 w-5 h-5 cursor-pointer">
                             </div>
@@ -367,12 +367,24 @@
                 <!-- 2. PROFILE & ACCOUNT TAB (Ref image #5) -->
                 <div id="tab-content-profile" class="space-y-6 hidden">
                     <h3 class="text-lg font-bold text-white">Profile & account</h3>
+                    <section class="glass-panel p-5 rounded-2xl border border-white/10 space-y-3">
+                        <div class="font-bold text-white text-sm">Profile appearance</div>
+                        <p class="text-xs text-slate-400">Member+ can upload a profile picture and banner. Unranked accounts need staff to grant image access before posting chat images.</p>
+                        <div id="profile-media-controls" class="flex flex-wrap items-center gap-3">
+                            <img id="profile-avatar-preview" src="https://placehold.co/56x56/10B981/ffffff?text=I" class="w-14 h-14 rounded-2xl object-cover border border-white/10" alt="Your profile picture">
+                            <button type="button" onclick="document.getElementById('profile-avatar-file')?.click()" class="px-3 py-2 rounded-lg bg-white/10 hover:bg-white/15 text-xs text-white">Change profile picture</button>
+                            <button type="button" onclick="document.getElementById('profile-banner-file')?.click()" class="px-3 py-2 rounded-lg bg-white/10 hover:bg-white/15 text-xs text-white">Change banner</button>
+                        </div>
+                        <input id="profile-avatar-file" type="file" accept="image/png,image/jpeg,image/webp,image/gif" class="hidden" onchange="uploadProfileMedia(event,'avatar')">
+                        <input id="profile-banner-file" type="file" accept="image/png,image/jpeg,image/webp,image/gif" class="hidden" onchange="uploadProfileMedia(event,'banner')">
+                        <div id="profile-media-rank-note" class="text-[11px] text-amber-300"></div>
+                    </section>
 
                     <div class="glass-panel p-5 rounded-2xl border border-white/10 space-y-4">
                         <div class="flex items-center justify-between pb-3 border-b border-white/10">
                             <div>
-                                <span class="text-xs text-slate-400">Image access</span>
-                                <div class="text-sm font-bold text-emerald-400">On</div>
+                                <span class="text-xs text-slate-400">Chat image access</span>
+                                <div id="profile-image-access-status" class="text-sm font-bold text-slate-300">Loading…</div>
                             </div>
                             <div class="text-xs text-slate-400">Your rank can always post images. Delay: 3s.</div>
                         </div>
@@ -680,11 +692,13 @@
                         <div class="min-w-0"><div class="text-[10px] font-bold uppercase tracking-wider text-emerald-300">Replying to</div><div id="reply-preview-text" class="truncate"></div></div>
                         <button type="button" onclick="cancelReply()" class="flex-shrink-0 rounded-lg p-1.5 text-slate-400 hover:bg-white/10 hover:text-white" aria-label="Cancel reply" title="Cancel reply"><i class="fa-solid fa-xmark"></i></button>
                     </div>
+                    <input id="chat-image-file" type="file" accept="image/png,image/jpeg,image/webp,image/gif" class="hidden" onchange="uploadChatMedia(event,'image')">
+                    <input id="chat-gif-file" type="file" accept="image/gif" class="hidden" onchange="uploadChatMedia(event,'gif')">
                     <div class="relative flex items-center">
-                        <button type="button" onclick="showToast('Media attachment opened', 'info')" class="absolute left-3 p-2 text-slate-400 hover:text-white transition">
+                        <button type="button" title="Attach image" onclick="document.getElementById('chat-image-file')?.click()" class="absolute left-3 p-2 text-slate-400 hover:text-white transition">
                             <i class="fa-solid fa-paperclip"></i>
                         </button>
-                        <button type="button" onclick="showToast('GIF picker opened', 'info')" class="absolute left-11 p-2 text-slate-400 hover:text-white transition text-xs font-bold px-2 rounded bg-white/5">
+                        <button type="button" title="Upload GIF" onclick="document.getElementById('chat-gif-file')?.click()" class="absolute left-11 p-2 text-slate-400 hover:text-white transition text-xs font-bold px-2 rounded bg-white/5">
                             GIF
                         </button>
 
@@ -721,7 +735,7 @@
 
         <!-- Member Profile Flyout -->
         <div id="profile-flyout" class="fixed right-0 top-0 h-full w-80 glass-panel border-l border-white/20 z-50 transform translate-x-full transition-transform duration-300 shadow-2xl flex flex-col">
-            <div class="h-32 bg-gradient-to-r from-emerald-600 to-teal-800 relative p-4 flex justify-end">
+            <div id="flyout-banner" class="h-32 bg-gradient-to-r from-emerald-600 to-teal-800 bg-cover bg-center relative p-4 flex justify-end">
                 <button onclick="closeProfileFlyout()" class="w-8 h-8 rounded-full bg-black/40 text-white flex items-center justify-center hover:bg-black/60 transition"><i class="fa-solid fa-xmark"></i></button>
             </div>
             <div class="px-6 relative -mt-12 flex-1 flex flex-col">
@@ -1272,13 +1286,38 @@
       let isBooting = false;
 
       const $ = (id) => document.getElementById(id);
+      const CHAT_PREF_IDS = ['toggle-autoscroll','toggle-verified','toggle-autovideo','toggle-announcements','toggle-autoafk','toggle-joinleave'];
+      function loadChatPreferences() {
+        try {
+          const prefs = JSON.parse(localStorage.getItem('ixxl-chat-preferences-v1') || '{}');
+          CHAT_PREF_IDS.forEach(id => { if (typeof prefs[id] === 'boolean' && $(id)) $(id).checked = prefs[id]; });
+        } catch (_) {}
+      }
+      function saveChatPreferences() {
+        try {
+          const prefs = {};
+          CHAT_PREF_IDS.forEach(id => { if ($(id)) prefs[id] = !!$(id).checked; });
+          localStorage.setItem('ixxl-chat-preferences-v1', JSON.stringify(prefs));
+        } catch (_) {}
+      }
       const esc = (value) => String(value ?? '').replace(/[&<>'"]/g, (c) => ({
         '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
       }[c]));
       const initials = (name) => (String(name || 'U').trim()[0] || 'U').toUpperCase();
       const fallbackAvatar = (name) => `https://placehold.co/48x48/10B981/ffffff?text=${encodeURIComponent(initials(name))}`;
       const roleLabel = (rank) => ({ owner:'OWNER', 'co-owner':'CO-OWNER', admin:'ADMIN', mod:'MOD', member:'MEMBER', unranked:'UNRANKED' }[rank] || 'UNRANKED');
-      const canModerate = () => ['owner','co-owner','admin','mod'].includes(ownProfile?.rank);
+      const canModerate = (channelId = currentChannelId) => {
+        const channel = channelCache.get(channelId);
+        if (!ownProfile || !channel) return false;
+        const rank = ownProfile.rank || 'unranked';
+        const server = serverCache.get(channel.server_id);
+        const isIxxlChat = server?.slug === 'ixxl-chat' || String(server?.name || '').toLowerCase() === 'ixxl chat';
+        const isMain = channel.slug === 'main' || String(channel.name || '').toLowerCase() === 'main';
+        const isGeneral = String(channel.name || '').toLowerCase() === 'general';
+        if (isMain) return rank === 'owner';
+        if (isGeneral) return isIxxlChat ? rank === 'owner' : ['owner','co-owner','admin'].includes(rank);
+        return rankLevel(rank) >= rankLevel(channel.manage_rank || 'owner') && ['owner','co-owner','admin','mod'].includes(rank);
+      };
       const formatTime = (iso) => new Date(iso).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
 
       function setAuthStatus(message, isError = false) {
@@ -1376,7 +1415,7 @@
 
       async function loadProfiles() {
         const { data, error } = await supabase.from('vus_profiles')
-          .select('id,username,display_name,avatar_url,about,rank,bubble_color,text_color,status,hide_profile,display_rank,banned,everyone_ping_opt_out')
+          .select('id,username,display_name,avatar_url,banner_url,about,rank,bubble_color,text_color,status,hide_profile,display_rank,banned,banned_until,image_access,everyone_ping_opt_out')
           .order('display_name', { ascending:true });
         if (error) throw error;
         allProfiles = data || [];
@@ -1493,7 +1532,7 @@
           content.innerHTML = '<div class="text-[11px] font-bold text-slate-400 uppercase tracking-wider px-2 py-1 mb-1">CHANNELS</div>' + ownerAdd + serverChannels.map(channel => {
             const active = currentChannelId === channel.id;
             const icon = channel.required_rank ? 'fa-lock text-amber-400' : (channel.channel_type === 'private' ? 'fa-hashtag text-emerald-300' : 'fa-hashtag text-slate-300');
-            return `<div class="flex items-center gap-1 mb-1 group" data-room-context="${esc(channel.id)}"><button oncontextmenu="openRoomContextMenu(event,'${esc(channel.id)}')" ondblclick="openRoomContextMenu(event,'${esc(channel.id)}')" onclick="selectChannel('${esc(channel.id)}')" class="flex-1 min-w-0 flex items-center gap-3 px-3 py-3 rounded-xl text-sm font-semibold transition border ${active ? 'bg-accent/20 text-white border-accent/40 shadow-lg' : 'bg-white/[0.035] border-white/5 text-slate-300 hover:bg-white/10 hover:text-white'}"><span class="w-9 h-9 rounded-xl bg-white/5 flex items-center justify-center flex-shrink-0 overflow-hidden">${channel.image_url ? `<img src="${esc(channel.image_url)}" class="w-full h-full object-cover">` : `<i class="fa-solid ${icon} text-base"></i>`}</span><span class="flex-1 text-left truncate">${esc(channel.name)}</span>${channel.is_pinned ? '<i class="fa-solid fa-thumbtack text-amber-300 text-[10px]"></i>' : ''}${channel.locked ? '<i class="fa-solid fa-lock text-amber-400 text-[10px]"></i>' : ''}</button><button type="button" title="Room actions" aria-label="Room actions" onclick="openRoomActionsFromButton(event,'${esc(channel.id)}')" class="w-9 h-9 flex-shrink-0 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 opacity-70 group-hover:opacity-100 focus:opacity-100" ><i class="fa-solid fa-ellipsis"></i></button></div>`;
+            return `<div class="flex items-center gap-1 mb-1 group" data-room-context="${esc(channel.id)}" oncontextmenu="openRoomContextMenu(event,'${esc(channel.id)}')"><button oncontextmenu="openRoomContextMenu(event,'${esc(channel.id)}')" ondblclick="openRoomContextMenu(event,'${esc(channel.id)}')" onclick="selectChannel('${esc(channel.id)}')" class="flex-1 min-w-0 flex items-center gap-3 px-3 py-3 rounded-xl text-sm font-semibold transition border ${active ? 'bg-accent/20 text-white border-accent/40 shadow-lg' : 'bg-white/[0.035] border-white/5 text-slate-300 hover:bg-white/10 hover:text-white'}"><span class="w-9 h-9 rounded-xl bg-white/5 flex items-center justify-center flex-shrink-0 overflow-hidden">${channel.image_url ? `<img src="${esc(channel.image_url)}" class="w-full h-full object-cover">` : `<i class="fa-solid ${icon} text-base"></i>`}</span><span class="flex-1 text-left truncate">${esc(channel.name)}</span>${channel.is_pinned ? '<i class="fa-solid fa-thumbtack text-amber-300 text-[10px]"></i>' : ''}${channel.locked ? '<i class="fa-solid fa-lock text-amber-400 text-[10px]"></i>' : ''}</button><button type="button" title="Room actions" aria-label="Room actions" onclick="openRoomActionsFromButton(event,'${esc(channel.id)}')" class="w-9 h-9 flex-shrink-0 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 opacity-70 group-hover:opacity-100 focus:opacity-100" ><i class="fa-solid fa-ellipsis"></i></button></div>`;
           }).join('');
         } else {
           title.innerHTML = '<i class="fa-solid fa-message text-accent"></i> Direct Messages';
@@ -1507,10 +1546,26 @@
       }
       window.renderSubSidebar = renderSubSidebarOnline;
 
+      function renderChatContent(raw) {
+        const value = String(raw ?? '');
+        const marker = 'IXXL_MEDIA:';
+        if (value.startsWith(marker)) {
+          const url = value.slice(marker.length).trim();
+          const allowed = /^https:\/\/[a-z0-9.-]+\/storage\/v1\/object\/public\/ixxl-chat-media\/[a-z0-9/_-]+\.(png|jpe?g|webp|gif)$/i.test(url);
+          if (!allowed) return esc(value);
+          const safeUrl = esc(url);
+          if (!($('toggle-autovideo')?.checked ?? true)) {
+            return '<a href="' + safeUrl + '" target="_blank" rel="noopener noreferrer" class="text-emerald-300 underline">Open image / GIF</a>';
+          }
+          return '<a href="' + safeUrl + '" target="_blank" rel="noopener noreferrer" class="inline-block max-w-full"><img src="' + safeUrl + '" alt="Chat image" loading="lazy" class="mt-2 max-w-full max-h-80 rounded-xl object-contain border border-white/10"></a>';
+        }
+        return esc(value).replace(/\n/g,'<br>');
+      }
+
       function renderMessagesOnline() {
         const feed = $('message-feed');
         if (!feed) return;
-        const messages = messagesStore[currentChannelId] || [];
+        const messages = (messagesStore[currentChannelId] || []).slice(-20);
         if (!messages.length) {
           feed.innerHTML = '<div class="flex-1 flex items-center justify-center text-center"><div><div class="w-14 h-14 rounded-2xl bg-white/5 border border-white/10 mx-auto mb-3 flex items-center justify-center"><i class="fa-regular fa-comments text-2xl text-slate-500"></i></div><p class="text-sm text-slate-300 font-semibold">No messages yet</p><p class="text-xs text-slate-500 mt-1">Start the conversation.</p></div></div>'; return;
         }
@@ -1521,7 +1576,7 @@
           const avatar = message.avatar || fallbackAvatar(message.sender);
           const replied = message.replyTo ? messages.find(m=>String(m.id)===String(message.replyTo)) : null;
           const reactionHtml = (message.reactions||[]).map(r=>`<button onclick="reactToMessage('${esc(message.id)}','${esc(r.emoji)}')" class="px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-[10px] text-slate-300">${esc(r.emoji)} ${r.count}</button>`).join('');
-          return `<div class="flex gap-3 group hover:bg-white/[0.02] p-2 rounded-xl transition"><img src="${esc(avatar)}" class="w-10 h-10 rounded-2xl object-cover flex-shrink-0 mt-0.5" alt=""><div class="flex-1 min-w-0"><div class="flex items-center gap-2 flex-wrap"><span class="font-bold text-sm text-white hover:underline cursor-pointer" onclick="openProfileFlyout('${esc(message.userId)}')">${esc(message.sender)}</span>${message.role ? `<span class="px-2 py-0.5 rounded-md bg-white/5 text-slate-300 border border-white/10 text-[10px] font-bold">${esc(message.role)}</span>` : ''}${message.verified && ($('toggle-verified')?.checked ?? true) ? '<span class="px-1.5 py-0.5 rounded-md bg-emerald-500/20 text-emerald-400 text-[10px] font-bold border border-emerald-500/30"><i class="fa-solid fa-check text-[9px]"></i> Verified</span>' : ''}<span class="text-[10px] text-slate-500">${esc(message.time)}</span></div>${replied ? `<div class="text-[10px] text-slate-400 border-l-2 border-emerald-400/60 pl-2 mb-1">Replying to ${esc(replied.sender)}: ${esc(replied.text).slice(0,100)}</div>` : ''}<div class="mt-1 text-sm font-medium tracking-wide break-words ${mine ? 'p-3 rounded-2xl inline-block max-w-full shadow' : ''}" style="${bubble}">${esc(message.text).replace(/\n/g,'<br>')}</div><div class="flex gap-2 mt-1 opacity-70 group-hover:opacity-100 text-[10px]"><button onclick="replyToMessage('${esc(message.id)}')" class="text-slate-400 hover:text-white">Reply</button><button onclick="reactToMessage('${esc(message.id)}','❤️')" class="text-slate-400 hover:text-white">❤️</button><button onclick="reactToMessage('${esc(message.id)}','😂')" class="text-slate-400 hover:text-white">😂</button><button onclick="reactToMessage('${esc(message.id)}','👍')" class="text-slate-400 hover:text-white">👍</button>${reactionHtml}${mine && message.createdAt && Date.now()-new Date(message.createdAt).getTime()<3600000 ? `<button onclick="editMessage('${esc(message.id)}')" class="text-slate-400 hover:text-white">Edit</button>`:''}</div></div></div>`;
+          return `<div class="flex gap-3 group hover:bg-white/[0.02] p-2 rounded-xl transition"><img src="${esc(avatar)}" class="w-10 h-10 rounded-2xl object-cover flex-shrink-0 mt-0.5" alt=""><div class="flex-1 min-w-0"><div class="flex items-center gap-2 flex-wrap"><span class="font-bold text-sm text-white hover:underline cursor-pointer" onclick="openProfileFlyout('${esc(message.userId)}')">${esc(message.sender)}</span>${message.role ? `<span class="px-2 py-0.5 rounded-md bg-white/5 text-slate-300 border border-white/10 text-[10px] font-bold">${esc(message.role)}</span>` : ''}${message.verified && ($('toggle-verified')?.checked ?? true) ? '<span class="px-1.5 py-0.5 rounded-md bg-emerald-500/20 text-emerald-400 text-[10px] font-bold border border-emerald-500/30"><i class="fa-solid fa-check text-[9px]"></i> Verified</span>' : ''}<span class="text-[10px] text-slate-500">${esc(message.time)}</span></div>${replied ? `<div class="text-[10px] text-slate-400 border-l-2 border-emerald-400/60 pl-2 mb-1">Replying to ${esc(replied.sender)}: ${esc(replied.text).slice(0,100)}</div>` : ''}<div class="mt-1 text-sm font-medium tracking-wide break-words ${mine ? 'p-3 rounded-2xl inline-block max-w-full shadow' : ''}" style="${bubble}">${renderChatContent(message.text)}</div><div class="flex gap-2 mt-1 opacity-70 group-hover:opacity-100 text-[10px]"><button onclick="replyToMessage('${esc(message.id)}')" class="text-slate-400 hover:text-white">Reply</button><button onclick="reactToMessage('${esc(message.id)}','❤️')" class="text-slate-400 hover:text-white">❤️</button><button onclick="reactToMessage('${esc(message.id)}','😂')" class="text-slate-400 hover:text-white">😂</button><button onclick="reactToMessage('${esc(message.id)}','👍')" class="text-slate-400 hover:text-white">👍</button>${reactionHtml}${mine && message.createdAt && Date.now()-new Date(message.createdAt).getTime()<3600000 ? `<button onclick="editMessage('${esc(message.id)}')" class="text-slate-400 hover:text-white">Edit</button>`:''}</div></div></div>`;
         }).join('');
         if ($('toggle-autoscroll')?.checked ?? true) feed.scrollTop = feed.scrollHeight;
       }
@@ -1583,6 +1638,11 @@
           if (data) { profile = data; profileCache.set(data.id, data); }
         }
         existing.push(profileForMessage(profile, row));
+        if (existing.length > 20) existing.splice(0, existing.length - 20);
+        const channel = channelCache.get(row.channel_id);
+        if (row.user_id !== signedInUser?.id && String(channel?.name || '').toLowerCase() === 'announcements' && ($('toggle-announcements')?.checked ?? true)) {
+          showSafeToast('New announcement in #announcements.', 'info');
+        }
         const mentionTokens=[ownProfile?.username,ownProfile?.display_name].filter(Boolean).map(v=>'@'+v.toLowerCase());
         if(row.user_id!==signedInUser?.id && mentionTokens.some(token=>String(row.content||'').toLowerCase().includes(token))) playPingDing();
         if (row.channel_id === currentChannelId) renderMessagesOnline();
@@ -1593,8 +1653,9 @@
         renderMessagesOnline();
         const {data, error} = await supabase.from('vus_messages')
           .select('id,channel_id,user_id,content,created_at,reply_to,edited_at')
-          .eq('channel_id',channelId).order('created_at',{ascending:true}).limit(100);
+          .eq('channel_id',channelId).order('created_at',{ascending:false}).order('id',{ascending:false}).limit(20);
         if (error) throw error;
+        (data || []).reverse();
         const userIds = [...new Set((data || []).map(row => row.user_id))];
         if (userIds.length) {
           const {data:profiles, error:profileError} = await supabase.from('vus_profiles')
@@ -1625,6 +1686,7 @@
         if (!channel) { showSafeToast('That conversation is not available to this account.', 'error'); return; }
         currentChannelId = id;
         if (channel.channel_type === 'dm') currentNavMode = 'dm';
+        renderStaffMenu();
         slowmodeDelay = Number(channel.slowmode_seconds || 0);
         renderSubSidebarOnline();
         $('chat-channel-name').innerHTML = `<i class="fa-solid ${channel.channel_type === 'private' ? 'fa-door-open text-accent' : channel.channel_type === 'dm' ? 'fa-message text-accent' : 'fa-hashtag text-slate-400'}"></i> ${esc(channel.name)}`;
@@ -1727,8 +1789,12 @@
       };
       document.addEventListener('contextmenu',e=>{
         const row=e.target.closest('[data-room-context]');
-        if(row){e.preventDefault();window.openRoomContextMenu(e,row.dataset.roomContext);}
-      });
+        if(row){e.preventDefault();e.stopPropagation();window.openRoomContextMenu(e,row.dataset.roomContext);}
+      },true);
+      document.addEventListener('dblclick',e=>{
+        const row=e.target.closest('[data-room-context]');
+        if(row){e.preventDefault();e.stopPropagation();window.openRoomContextMenu(e,row.dataset.roomContext);}
+      },true);
       document.addEventListener('click',e=>{if(!e.target.closest('#room-context-menu')&&!e.target.closest('[data-room-context]'))$('room-context-menu')?.classList.add('hidden');});
       document.addEventListener('keydown',e=>{if(e.key==='Escape')$('room-context-menu')?.classList.add('hidden');});
       window.copyRoomId=async(id)=>{try{await navigator.clipboard.writeText(id);showSafeToast('Room ID copied.','success');}catch(e){showSafeToast('Could not copy room ID.','error');}$('room-context-menu')?.classList.add('hidden');};
@@ -1786,8 +1852,11 @@
         {name:'unlock',min:'mod',description:'Unlock the current room.'},
         {name:'announce',min:'mod',description:'Post an announcement.'},
         {name:'rank',min:'admin',description:'Change a member rank.'},
-        {name:'ban',min:'admin',description:'Ban a member from Ixxl Chat.'},
-        {name:'unban',min:'admin',description:'Unban a member.'},
+        {name:'ban',min:'admin',description:'Permanently ban a member in an eligible channel.'},
+        {name:'tempban',min:'admin',description:'Temporarily ban a member for 1 minute to 30 days.'},
+        {name:'unban',min:'admin',description:'Unban a member in an eligible channel.'},
+        {name:'imageaccess',min:'admin',description:'Grant or revoke image and GIF upload access.'},
+        {name:'serverdelete',min:'owner',description:'Delete the currently selected server (default Ixxl Chat is protected).'},
         {name:'channel',min:'owner',description:'Create or remove a public room.'},
         {name:'cmdlog',min:'mod',description:'Show recent moderator command activity.'},
         {name:'rooms',min:'owner',description:'List every room, including private rooms.'},
@@ -1866,8 +1935,8 @@
             <p class="text-[11px] text-slate-400 mt-1">${esc(command.description)}</p>
             <p class="text-[9px] text-slate-500 mt-1">${RANK_TITLE[command.min]}+</p>
           </div>`).join('');
-        $('staff-moderation-controls')?.classList.toggle('hidden', !hasRank('mod'));
-        $('staff-rank-controls')?.classList.toggle('hidden', !hasRank('admin'));
+        $('staff-moderation-controls')?.classList.toggle('hidden', !canModerate(currentChannelId));
+        $('staff-rank-controls')?.classList.toggle('hidden', !hasRank('admin') || !canModerate(currentChannelId));
         $('owner-channel-controls')?.classList.toggle('hidden', rank !== 'owner');
         if (hasRank('admin')) {
           if (rank === 'owner') {
@@ -1941,7 +2010,7 @@
         const target = allProfiles.find(profile => profile.username.toLowerCase() === username.toLowerCase());
         if (!target) { showSafeToast('That username was not found.', 'error'); return; }
         try {
-          const {error} = await supabase.rpc('vus_set_rank',{p_target_user:target.id,p_new_rank:rank});
+          const {error} = await supabase.rpc('vus_set_rank_in_channel',{p_channel_id:currentChannelId,p_target_user:target.id,p_new_rank:rank});
           if (error) throw error;
           $('staff-rank-username').value = '';
           await loadProfiles();
@@ -1952,7 +2021,7 @@
       };
 
       async function runModeration(action, value = null) {
-        if (!canModerate()) { showSafeToast('Moderator permissions are required.', 'error'); return; }
+        if (!canModerate(currentChannelId)) { showSafeToast('You do not have moderation permission in this channel.', 'error'); return; }
         const channel = channelCache.get(currentChannelId);
         if (!channel) { showSafeToast('Choose a channel first.', 'error'); return; }
         try {
@@ -1991,6 +2060,10 @@
         const parts = rest.split(/\s+/).filter(Boolean);
         const need = (rank) => {
           if (!hasRank(rank)) { showSafeToast(`/${command} requires ${RANK_TITLE[rank]} rank or higher.`, 'error'); return false; }
+          if ((rank === 'mod' || rank === 'admin') && !canModerate(currentChannelId)) {
+            showSafeToast('Admin actions are owner-only in #main and are limited to eligible #general channels outside Ixxl Chat.', 'error');
+            return false;
+          }
           return true;
         };
         if (command === 'help' || command === 'commands') {
@@ -2039,7 +2112,7 @@
           const target = allProfiles.find(profile => profile.username.toLowerCase() === username.toLowerCase());
           if (!target) { showSafeToast('That username was not found.', 'error'); return; }
           try {
-            const {error} = await supabase.rpc('vus_set_rank',{p_target_user:target.id,p_new_rank:rank});
+            const {error} = await supabase.rpc('vus_set_rank_in_channel',{p_channel_id:currentChannelId,p_target_user:target.id,p_new_rank:rank});
             if (error) throw error;
             await supabase.rpc('vus_log_command',{p_command:'rank',p_target:target.id,p_details:{rank}});
             await loadProfiles();
@@ -2056,10 +2129,57 @@
           const target = allProfiles.find(profile => profile.username.toLowerCase() === username.toLowerCase());
           if (!target) { showSafeToast('That username was not found.', 'error'); return; }
           try {
-            const {error} = await supabase.rpc(command === 'ban' ? 'vus_ban_user' : 'vus_unban_user', {p_target_user:target.id, p_reason:parts.slice(1).join(' ') || null});
+            const {error} = await supabase.rpc(command === 'ban' ? 'vus_ban_user_in_channel' : 'vus_unban_user_in_channel', {p_channel_id:currentChannelId,p_target_user:target.id,p_reason:parts.slice(1).join(' ') || null});
             if (error) throw error;
             showSafeToast(command === 'ban' ? `${username} was banned.` : `${username} was unbanned.`, 'success');
           } catch (error) { showSafeToast(error?.message || `Could not ${command} that user.`, 'error'); }
+          return;
+        }
+        if (command === 'tempban') {
+          if (!need('admin')) return;
+          const username = parts[0]?.replace(/^@/, '');
+          const minutes = Number(parts[1]);
+          if (!username || !Number.isInteger(minutes) || minutes < 1 || minutes > 43200) {
+            showSafeToast('Usage: /tempban <username> <minutes 1–43200> [reason]','error'); return;
+          }
+          const target = allProfiles.find(profile => profile.username.toLowerCase() === username.toLowerCase());
+          if (!target) { showSafeToast('That username was not found.','error'); return; }
+          try {
+            const {data,error} = await supabase.rpc('vus_temp_ban_user',{p_channel_id:currentChannelId,p_target_user:target.id,p_duration_minutes:minutes,p_reason:parts.slice(2).join(' ') || null});
+            if (error) throw error;
+            showSafeToast(username + ' is temporarily banned until ' + new Date(data).toLocaleString() + '.','success');
+          } catch (error) { showSafeToast(error?.message || 'Temporary ban failed.','error'); }
+          return;
+        }
+        if (command === 'imageaccess') {
+          if (!need('admin')) return;
+          const username = parts[0]?.replace(/^@/, '');
+          const setting = parts[1]?.toLowerCase();
+          if (!username || !['on','off','grant','revoke'].includes(setting)) {
+            showSafeToast('Usage: /imageaccess <username> <on|off>','error'); return;
+          }
+          const target = allProfiles.find(profile => profile.username.toLowerCase() === username.toLowerCase());
+          if (!target) { showSafeToast('That username was not found.','error'); return; }
+          const enabled = setting === 'on' || setting === 'grant';
+          try {
+            const {error} = await supabase.rpc('vus_set_image_access',{p_channel_id:currentChannelId,p_target_user:target.id,p_enabled:enabled});
+            if (error) throw error;
+            await loadProfiles();
+            showSafeToast((enabled ? 'Image access granted to ' : 'Image access removed from ') + username + '.','success');
+          } catch (error) { showSafeToast(error?.message || 'Could not update image access.','error'); }
+          return;
+        }
+        if (command === 'serverdelete') {
+          if (!need('owner')) return;
+          const server = serverCache.get(activeServerId);
+          if (!server) { showSafeToast('Choose a server first.','error'); return; }
+          if (!window.confirm('Permanently delete the server "' + server.name + '" and its rooms?')) return;
+          try {
+            const {error} = await supabase.rpc('vus_delete_server',{p_server_id:activeServerId});
+            if (error) throw error;
+            showSafeToast('Server deleted. Reloading chat…','success');
+            setTimeout(()=>window.location.reload(),500);
+          } catch (error) { showSafeToast(error?.message || 'Could not delete this server.','error'); }
           return;
         }
         if (command === 'cmdlog') {
@@ -2124,7 +2244,7 @@
       window.broadcastAnnouncement = async () => {
         const input = $('announcement-input'); const value = input?.value.trim();
         if (!value) return;
-        if (!canModerate()) { showSafeToast('Moderator permissions are required.', 'error'); return; }
+        if (!canModerate(currentChannelId)) { showSafeToast('You do not have moderation permission in this channel.', 'error'); return; }
         const {error} = await supabase.rpc('vus_announce',{p_message:value});
         if (error) showSafeToast(error.message, 'error'); else { input.value=''; showSafeToast('Announcement posted in #main.', 'success'); }
       };
@@ -2139,6 +2259,48 @@
         renderMessagesOnline(); showSafeToast('Your message colors were saved.', 'success');
       };
 
+      window.uploadChatMedia = async (event, kind) => {
+        const file = event.target.files?.[0];
+        event.target.value = '';
+        if (!file) return;
+        if (!(hasRank('member') || ownProfile?.image_access)) { showSafeToast('Image access is not enabled for your account. Ask staff to grant it.', 'error'); return; }
+        const extensions = {'image/jpeg':'jpg','image/png':'png','image/webp':'webp','image/gif':'gif'};
+        if (!extensions[file.type] || (kind === 'gif' && file.type !== 'image/gif')) { showSafeToast(kind === 'gif' ? 'Choose a GIF file.' : 'Choose PNG, JPG, WEBP or GIF.', 'error'); return; }
+        if (file.size > 8 * 1024 * 1024) { showSafeToast('Chat images and GIFs must be 8 MB or smaller.', 'error'); return; }
+        if (!currentChannelId) { showSafeToast('Choose a channel first.', 'error'); return; }
+        try {
+          const path = currentChannelId + '/' + signedInUser.id + '/' + Date.now() + '-' + Math.random().toString(36).slice(2) + '.' + extensions[file.type];
+          const {error:uploadError} = await supabase.storage.from('ixxl-chat-media').upload(path,file,{upsert:false,contentType:file.type,cacheControl:'3600'});
+          if (uploadError) throw uploadError;
+          const {data} = supabase.storage.from('ixxl-chat-media').getPublicUrl(path);
+          const sent = await sendChatContent('IXXL_MEDIA:' + data.publicUrl);
+          if (sent) showSafeToast(kind === 'gif' ? 'GIF sent.' : 'Image sent.','success');
+        } catch (error) { showSafeToast(error?.message || 'Image upload failed.','error'); }
+      };
+
+      window.uploadProfileMedia = async (event, kind) => {
+        const file = event.target.files?.[0];
+        event.target.value = '';
+        if (!file) return;
+        if (!hasRank('member')) { showSafeToast('Member+ is required to change profile media.','error'); return; }
+        const extensions = {'image/jpeg':'jpg','image/png':'png','image/webp':'webp','image/gif':'gif'};
+        if (!extensions[file.type]) { showSafeToast('Choose PNG, JPG, WEBP or GIF.','error'); return; }
+        if (file.size > 5 * 1024 * 1024) { showSafeToast('Profile images must be 5 MB or smaller.','error'); return; }
+        try {
+          const filename = kind === 'banner' ? 'profile-banner.' : 'profile-avatar.';
+          const path = signedInUser.id + '/' + filename + extensions[file.type];
+          const {error:uploadError} = await supabase.storage.from('orbit-avatars').upload(path,file,{upsert:true,contentType:file.type,cacheControl:'3600'});
+          if (uploadError) throw uploadError;
+          const {data} = supabase.storage.from('orbit-avatars').getPublicUrl(path);
+          const args = kind === 'banner' ? {p_avatar_url:null,p_banner_url:data.publicUrl} : {p_avatar_url:data.publicUrl,p_banner_url:null};
+          const {error} = await supabase.rpc('vus_set_profile_media',args);
+          if (error) throw error;
+          await loadOwnProfile();
+          await loadProfiles();
+          showSafeToast(kind === 'banner' ? 'Profile banner updated.' : 'Profile picture updated.','success');
+        } catch (error) { showSafeToast(error?.message || 'Could not update profile media.','error'); }
+      };
+
       window.openProfileFlyout = (profileId) => {
         const profile = profileCache.get(profileId) || allProfiles.find(item => item.id === profileId);
         if (!profile) return;
@@ -2147,6 +2309,10 @@
         $('flyout-name').textContent = name;
         $('flyout-tag').textContent = `@${profile.username}`;
         $('flyout-avatar').src = profile.avatar_url || fallbackAvatar(name);
+        const banner = $('flyout-banner');
+        if (banner) banner.style.backgroundImage = profile.banner_url
+          ? 'linear-gradient(180deg,rgba(2,6,23,.08),rgba(2,6,23,.48)),url("' + profile.banner_url + '")'
+          : 'linear-gradient(120deg,#059669,#0f766e)';
         $('flyout-role').textContent = profile.display_rank === false ? '' : roleLabel(profile.rank);
         $('flyout-about').textContent = [profile.status, profile.about || 'No bio yet.'].filter(Boolean).join(' · ');
         const action = $('profile-flyout')?.querySelector('.mt-auto button');
@@ -2154,13 +2320,39 @@
         const secondary = $('profile-flyout')?.querySelector('.mt-auto button:nth-child(2)');
         if (secondary) secondary.classList.add('hidden');
         if (action) { action.textContent = 'Message'; action.onclick = () => window.startVusDm(profile.id); }
-        if (secondary && hasRank('admin') && profile.id !== signedInUser?.id) {
+        if (secondary && hasRank('admin') && canModerate(currentChannelId) && profile.id !== signedInUser?.id) {
           secondary.classList.remove('hidden'); secondary.textContent = 'Moderation actions';
           secondary.onclick = async () => {
-            const choice = window.prompt(`Actions for @${profile.username}: type ban, rank, or cancel`);
+            const choice = window.prompt('Actions for @' + profile.username + ': ban, tempban, unban, rank, imageaccess, cancel');
             if (!choice || choice === 'cancel') return;
-            if (choice === 'ban') { const reason=window.prompt('Ban reason (optional):')||''; try { const {error}=await supabase.rpc('vus_ban_user',{p_target_user:profile.id,p_reason:reason||null}); if(error)throw error; showSafeToast('User banned.','success'); } catch(e){showSafeToast(e.message||'Ban failed.','error');} }
-            if (choice === 'rank') { const rank=window.prompt('New rank: unranked, member, mod, admin, co-owner, owner'); if(!rank)return; try {const {error}=await supabase.rpc('vus_set_rank',{p_target_user:profile.id,p_new_rank:rank.toLowerCase()});if(error)throw error;await loadProfiles();showSafeToast('Rank updated.','success');}catch(e){showSafeToast(e.message||'Rank update failed.','error');} }
+            if (!canModerate(currentChannelId) || !hasRank('admin')) { showSafeToast('Admin actions are not available in this channel.','error'); return; }
+            if (choice === 'ban') {
+              const reason=window.prompt('Ban reason (optional):')||'';
+              try { const {error}=await supabase.rpc('vus_ban_user_in_channel',{p_channel_id:currentChannelId,p_target_user:profile.id,p_reason:reason||null}); if(error)throw error; showSafeToast('User banned.','success'); }
+              catch(e){showSafeToast(e.message||'Ban failed.','error');}
+            }
+            if (choice === 'tempban') {
+              const minutes=Number(window.prompt('Temporary ban duration in minutes (1–43200):','60'));
+              if(!Number.isInteger(minutes)||minutes<1||minutes>43200)return;
+              const reason=window.prompt('Reason (optional):')||'';
+              try { const {data,error}=await supabase.rpc('vus_temp_ban_user',{p_channel_id:currentChannelId,p_target_user:profile.id,p_duration_minutes:minutes,p_reason:reason||null}); if(error)throw error; showSafeToast('Temporary ban expires ' + new Date(data).toLocaleString(),'success'); }
+              catch(e){showSafeToast(e.message||'Temporary ban failed.','error');}
+            }
+            if (choice === 'unban') {
+              try { const {error}=await supabase.rpc('vus_unban_user_in_channel',{p_channel_id:currentChannelId,p_target_user:profile.id,p_reason:null}); if(error)throw error; showSafeToast('User unbanned.','success'); }
+              catch(e){showSafeToast(e.message||'Unban failed.','error');}
+            }
+            if (choice === 'rank') {
+              const rank=window.prompt('New rank: unranked, member, mod, admin, co-owner');
+              if(!rank)return;
+              try {const {error}=await supabase.rpc('vus_set_rank_in_channel',{p_channel_id:currentChannelId,p_target_user:profile.id,p_new_rank:rank.toLowerCase()});if(error)throw error;await loadProfiles();showSafeToast('Rank updated.','success');}
+              catch(e){showSafeToast(e.message||'Rank update failed.','error');}
+            }
+            if (choice === 'imageaccess') {
+              const enabled=window.confirm('Grant image/GIF upload access to @' + profile.username + '? OK = grant, Cancel = revoke.');
+              try {const {error}=await supabase.rpc('vus_set_image_access',{p_channel_id:currentChannelId,p_target_user:profile.id,p_enabled:enabled});if(error)throw error;await loadProfiles();showSafeToast(enabled?'Image access granted.':'Image access removed.','success');}
+              catch(e){showSafeToast(e.message||'Image access update failed.','error');}
+            }
           };
         }
         $('profile-flyout')?.classList.remove('translate-x-full');
@@ -2172,15 +2364,23 @@
 
       async function loadOwnProfile() {
         const {data,error} = await supabase.from('vus_profiles')
-          .select('id,username,display_name,avatar_url,about,rank,bubble_color,text_color,status,hide_profile,display_rank,banned,everyone_ping_opt_out')
+          .select('id,username,display_name,avatar_url,banner_url,about,rank,bubble_color,text_color,status,hide_profile,display_rank,banned,banned_until,image_access,everyone_ping_opt_out')
           .eq('id',signedInUser.id).single();
         if (error) throw error;
+        if (data.banned && (!data.banned_until || new Date(data.banned_until).getTime() > Date.now())) {
+          const expiry = data.banned_until ? new Date(data.banned_until).toLocaleString() : 'permanently';
+          throw new Error('This account is banned until ' + expiry + '.');
+        }
         ownProfile = data;
         currentUser = {name:data.display_name || data.username,tag:roleLabel(data.rank),avatar:data.avatar_url || fallbackAvatar(data.display_name || data.username),id:data.id};
         customBubbleBg = data.bubble_color || '#14532d';
         customBubbleText = data.text_color || '#ffffff';
         $('user-avatar-img').src = currentUser.avatar;
         $('footer-avatar').src = currentUser.avatar;
+        if ($('profile-avatar-preview')) $('profile-avatar-preview').src = currentUser.avatar;
+        $('profile-media-controls')?.classList.toggle('hidden', !hasRank('member'));
+        $('profile-media-rank-note').textContent = hasRank('member') ? 'Profile media uploads are enabled for your rank.' : 'Member+ required for profile picture and banner uploads.';
+        $('profile-image-access-status').textContent = (hasRank('member') || data.image_access) ? 'Enabled' : 'Staff grant required';
         $('footer-username').textContent = currentUser.name;
         $('footer-tag').textContent = roleLabel(data.rank);
         $('header-username-label').textContent = currentUser.name;
@@ -2248,6 +2448,45 @@
       });
       $('toggle-verified')?.addEventListener('change', renderMessagesOnline);
       $('toggle-joinleave')?.addEventListener('change', renderMessagesOnline);
+      CHAT_PREF_IDS.forEach(id => $(id)?.addEventListener('change', () => {
+        saveChatPreferences();
+        renderMessagesOnline();
+        if (id === 'toggle-autoafk' && !$(id).checked) restoreAfkStatus();
+      }));
+      $('everyone-ping-optout')?.addEventListener('change', async event => {
+        if (!signedInUser) return;
+        const value = !!event.target.checked;
+        const {error} = await supabase.from('vus_profiles').update({everyone_ping_opt_out:value}).eq('id',signedInUser.id);
+        if (error) { event.target.checked = !value; showSafeToast(error.message || 'Could not save ping preference.','error'); }
+        else { if (ownProfile) ownProfile.everyone_ping_opt_out = value; showSafeToast('Ping preference saved.','success'); }
+      });
+      loadChatPreferences();
+      let lastActivityAt = Date.now();
+      let afkApplied = false;
+      let originalStatusBeforeAfk = '';
+      async function restoreAfkStatus() {
+        if (!afkApplied || !signedInUser) return;
+        afkApplied = false;
+        const status = originalStatusBeforeAfk;
+        if (ownProfile) ownProfile.status = status;
+        try { await supabase.from('vus_profiles').update({status}).eq('id',signedInUser.id); } catch (_) {}
+      }
+      function setupAutoAfk() {
+        if (!window.__ixxlAfkTimer) {
+          const activity = () => {
+            lastActivityAt = Date.now();
+            if (afkApplied) restoreAfkStatus();
+          };
+          ['pointerdown','keydown','touchstart','input'].forEach(name => document.addEventListener(name,activity,{passive:true}));
+          window.__ixxlAfkTimer = window.setInterval(async () => {
+            if (!signedInUser || !ownProfile || !$('toggle-autoafk')?.checked || afkApplied || Date.now()-lastActivityAt < 120000) return;
+            originalStatusBeforeAfk = ownProfile.status || '';
+            const {error} = await supabase.from('vus_profiles').update({status:'AFK'}).eq('id',signedInUser.id);
+            if (!error) { afkApplied = true; ownProfile.status = 'AFK'; }
+          },15000);
+        }
+      }
+      setupAutoAfk();
     </script>
 
 </body>
