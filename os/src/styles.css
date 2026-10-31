@@ -184,3 +184,26 @@ input,textarea,[contenteditable=true],#vs-code{user-select:text;-webkit-user-sel
 #vs-code::selection{background:#5477ad66}
 #vs-code:focus{box-shadow:none}
 .tok-comment{color:#71869e}.tok-tag,.tok-keyword{color:#c792ea}.tok-attr,.tok-prop{color:#82aaff}.tok-string{color:#c3e88d}.tok-selector{color:#ffcb6b}.tok-color,.tok-number{color:#f78c6c}
+
+
+/* Liquid-glass editor refinement + nested explorer */
+.vscode{background:linear-gradient(135deg,color-mix(in srgb,var(--surface) 88%,transparent),color-mix(in srgb,var(--bg2) 45%,transparent));backdrop-filter:blur(calc(var(--blur,24px) * .8)) saturate(155%);-webkit-backdrop-filter:blur(calc(var(--blur,24px) * .8)) saturate(155%);color:var(--text);border:1px solid #ffffff26;border-radius:18px;box-shadow:0 22px 60px #0005,inset 0 1px #ffffff20;overflow:hidden}
+.vs-activity,.vs-explorer,.vs-main,.vs-code-stage,.vs-lines{background:color-mix(in srgb,var(--surface) 62%,transparent)!important}
+.vs-activity,.vs-explorer{backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px)}
+.vs-activity,.vs-explorer{border-color:#ffffff20}
+.vs-side-title{color:color-mix(in srgb,var(--text) 65%,transparent)}
+.vs-project{display:flex;align-items:center;min-height:34px;color:var(--text);font:600 11px system-ui}
+.vs-explorer-actions{display:flex;gap:5px;padding:2px 8px 8px}
+.vs-explorer-actions button{padding:5px 8px;border:1px solid #ffffff20;border-radius:8px;background:#ffffff0b;color:var(--text);font:11px system-ui}
+.vs-folder,.vs-file{display:block;width:100%;box-sizing:border-box;padding:7px 8px 7px calc(10px + var(--tree-depth,0)*13px);text-align:left;border-radius:7px;font:12px ui-monospace,monospace;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.vs-folder:hover,.vs-file:hover{background:#ffffff16}
+.vs-file.active{background:color-mix(in srgb,var(--accent) 25%,transparent);color:var(--text);border-left:2px solid var(--accent)}
+.vs-toolbar,.vs-tab,.vs-findbar{background:color-mix(in srgb,var(--surface) 72%,transparent);border-color:#ffffff20}
+.vs-toolbar button{border:1px solid transparent;border-radius:8px}.vs-toolbar button:hover{background:#ffffff18;border-color:#ffffff20}
+.vs-tab{color:var(--text);border-bottom:1px solid color-mix(in srgb,var(--accent) 75%,transparent)}
+.vs-editor-wrap{background:transparent;min-height:0}.vs-code-stage{background:color-mix(in srgb,var(--surface) 42%,transparent)!important}
+#vs-highlight{color:var(--text)}#vs-code{caret-color:var(--text)}
+.vs-status{background:color-mix(in srgb,var(--accent) 32%,var(--surface));color:var(--text);border-top:1px solid #ffffff20}
+.vs-findbar input{background:#ffffff10;color:var(--text);border:1px solid #ffffff20;border-radius:8px}
+.vs-findbar button{border-radius:8px;background:#ffffff10;color:var(--text)}
+@media(max-width:650px){.vscode{border-radius:13px}.vs-explorer-actions{padding:2px 4px 6px}.vs-folder,.vs-file{font-size:10px}}
