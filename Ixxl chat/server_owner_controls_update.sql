@@ -84,3 +84,24 @@ revoke execute on function public.vus_join_server(text) from public,anon;
 grant execute on function public.vus_owner_ban_server_members(uuid,uuid[],text) to authenticated;
 grant execute on function public.vus_update_server_visibility(uuid,text) to authenticated;
 grant execute on function public.vus_join_server(text) to authenticated;
+
+ 
+-- Owner-only member listing for the server ban-exception picker.
+create or replace function public.vus_owner_list_server_members(p_server_id uuid)
+returns table(id uuid,username text,display_name text,rank text,avatar_url text)
+language plpgsql security definer set search_path=public,pg_temp as $$
+declare v_owner uuid;
+begin
+  if auth.uid() is null then raise exception 'Sign in required'; end if;
+  select owner_id into v_owner from public.vus_servers where id=p_server_id;
+  if not found then raise exception 'Server not found'; end if;
+  if v_owner is distinct from auth.uid() then raise exception 'Only the server owner can view the member list'; end if;
+  return query
+    select p.id,p.username,p.display_name,p.rank,p.avatar_url
+    from public.vus_server_members m
+    join public.vus_profiles p on p.id=m.user_id
+    where m.server_id=p_server_id
+    order by coalesce(p.display_name,p.username);
+end $$;
+revoke execute on function public.vus_owner_list_server_members(uuid) from public,anon;
+grant execute on function public.vus_owner_list_server_members(uuid) to authenticated;
