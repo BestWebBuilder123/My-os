@@ -280,3 +280,11 @@ input,textarea,[contenteditable=true],#vs-code{user-select:text;-webkit-user-sel
 .cs-status{height:23px;min-height:23px;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:0 9px;background:linear-gradient(90deg,#426f9d,#526e9f);color:#f2f6ff;font-size:9px;white-space:nowrap;overflow:hidden}.cs-status span{overflow:hidden;text-overflow:ellipsis}.cs-context{position:absolute;z-index:10;top:40px;left:12px;min-width:150px;padding:5px;border:1px solid #ffffff24;border-radius:9px;background:rgba(27,35,52,.96);backdrop-filter:blur(20px);box-shadow:0 12px 35px #0006}.cs-context[hidden]{display:none}.cs-context button{display:block;width:100%;padding:8px;text-align:left;color:#dce6f5;font-size:11px;border-radius:5px}.cs-context button:hover{background:#ffffff16}
 .code-studio.cs-light{background:rgba(239,243,250,.97);color:#28364c;--cs-line:#263b5c20;--cs-panel:rgba(244,247,252,.95);--cs-muted:#69778e}.cs-light .cs-titlebar,.cs-light .cs-sidebar,.cs-light .cs-activity,.cs-light .cs-tabs,.cs-light .cs-bottom{background:rgba(230,236,246,.92)}.cs-light .cs-main,.cs-light .cs-editor-area{background:rgba(248,250,254,.95)}.cs-light .cs-edit-wrap pre{color:#29374c}.cs-light .cs-edit-wrap textarea{caret-color:#27374e}.cs-light .cs-tree-file,.cs-light .cs-tree-folder,.cs-light .cs-menu button,.cs-light .cs-tab{color:#3c4a60}.cs-light .cs-tab.active{background:#fff;color:#24334a}.cs-light .cs-brand,.cs-light .cs-side-heading{color:#28364c}
 @media(max-width:700px){.cs-menu{display:none}.cs-sidebar{width:145px;min-width:110px}.cs-minimap{display:none}.cs-command{max-width:none}.cs-status{font-size:8px}.cs-status span:nth-child(2){display:none}}
+
+/* Code Studio tabs: separate, reliable tab switching and close targets. */
+.cs-tab{padding:0;gap:0;flex:none}
+.cs-tab-open{min-width:0;max-width:165px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:0 5px 0 10px;color:inherit;font-size:inherit;text-align:left}
+.cs-tab-close{width:25px;min-width:25px;flex:none;padding:0;color:#8291a7;font-size:15px;border-radius:0}
+.cs-tab-close:hover{color:#fff;background:#ffffff16}
+.cs-light .cs-tab-close{color:#64748b}
+.cs-light .cs-tab-close:hover{color:#24334a;background:#0000000d}
