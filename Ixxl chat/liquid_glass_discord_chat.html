@@ -1787,6 +1787,13 @@
         const r=event.currentTarget.getBoundingClientRect();
         window.openRoomContextMenu({preventDefault(){},stopPropagation(){},clientX:r.right-8,clientY:r.bottom+4},channelId);
       };
+      // Handle right-click directly inside the embedded chat. Some host windows/webviews
+      // suppress the later contextmenu event, so open the custom menu on right pointer press too.
+      document.addEventListener('pointerdown',e=>{
+        if(e.pointerType!=='mouse'||e.button!==2)return;
+        const row=e.target.closest('[data-room-context]');
+        if(row){e.preventDefault();e.stopPropagation();window.openRoomContextMenu(e,row.dataset.roomContext);}
+      },true);
       document.addEventListener('contextmenu',e=>{
         const row=e.target.closest('[data-room-context]');
         if(row){e.preventDefault();e.stopPropagation();window.openRoomContextMenu(e,row.dataset.roomContext);}
