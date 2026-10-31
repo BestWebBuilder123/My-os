@@ -1546,11 +1546,15 @@
         if(!isOwner&&!server.invite_code) html+='<div class="px-3 py-3 text-xs text-slate-400">No server actions available.</div>';
         menu.innerHTML=html;
         menu.dataset.menuOwner='server';
+        menu.style.width='auto';
+        menu.style.minWidth='0';
+        menu.style.maxWidth='min(13rem, calc(100vw - 16px))';
         menu.classList.remove('hidden');
         trigger.setAttribute('aria-expanded','true');
         const r=trigger.getBoundingClientRect();
         requestAnimationFrame(()=>{
-          const left=Math.max(8,Math.min(r.right-menu.offsetWidth,window.innerWidth-menu.offsetWidth-8));
+          const width=menu.offsetWidth;
+          const left=Math.max(8,Math.min(r.right-width,window.innerWidth-width-8));
           const below=r.bottom+6;
           const top=below+menu.offsetHeight<=window.innerHeight-8?below:Math.max(8,r.top-menu.offsetHeight-6);
           menu.style.left=left+'px';
