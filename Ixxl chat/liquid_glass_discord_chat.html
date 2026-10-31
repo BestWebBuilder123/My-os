@@ -2099,7 +2099,7 @@
           if (!need('mod')) return;
           if (!rest) { showSafeToast('Usage: /announce <message>', 'error'); return; }
           try {
-            const {error} = await supabase.rpc('vus_announce',{p_message:rest});
+            const {error} = await supabase.rpc('vus_announce_in_channel',{p_channel_id:currentChannelId,p_message:rest});
             if (error) throw error;
             showSafeToast('Announcement posted in #main.', 'success');
           } catch (error) { showSafeToast(error?.message || 'Could not post the announcement.', 'error'); }
@@ -2245,7 +2245,7 @@
         const input = $('announcement-input'); const value = input?.value.trim();
         if (!value) return;
         if (!canModerate(currentChannelId)) { showSafeToast('You do not have moderation permission in this channel.', 'error'); return; }
-        const {error} = await supabase.rpc('vus_announce',{p_message:value});
+        const {error} = await supabase.rpc('vus_announce_in_channel',{p_channel_id:currentChannelId,p_message:value});
         if (error) showSafeToast(error.message, 'error'); else { input.value=''; showSafeToast('Announcement posted in #main.', 'success'); }
       };
 
