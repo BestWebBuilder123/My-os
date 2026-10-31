@@ -617,9 +617,6 @@
                 </span>
                 <button id="server-dropdown-trigger" type="button" aria-label="Open server menu" aria-haspopup="true" aria-expanded="false" onclick="toggleServerDropdown(event)" class="text-slate-400 hover:text-white transition p-2 -mr-2 rounded-lg hover:bg-white/10"><i class="fa-solid fa-chevron-down text-xs"></i></button>
             </div>
-            <div id="server-dropdown-menu" class="hidden fixed z-[999999] min-w-52 glass-panel border border-white/15 rounded-xl shadow-2xl p-1">
-                <div id="server-dropdown-menu-content"></div>
-            </div>
 
             <input id="server-icon-file" type="file" accept="image/png,image/jpeg,image/webp,image/gif" class="hidden" onchange="uploadCommunityServerIcon(event)">
             <!-- Content Area (Channels or DMs) -->
@@ -1524,14 +1521,14 @@
       window.renderJoinedRooms = renderJoinedRoomsOnline;
 
       window.closeServerDropdown=()=>{
-        $('server-dropdown-menu')?.classList.add('hidden');
+        $('room-context-menu')?.classList.add('hidden');
         $('server-dropdown-trigger')?.setAttribute('aria-expanded','false');
       };
       window.toggleServerDropdown=(event)=>{
         event?.preventDefault();event?.stopPropagation();
-        const menu=$('server-dropdown-menu'),trigger=$('server-dropdown-trigger');
+        const menu=$('room-context-menu'),trigger=$('server-dropdown-trigger');
         if(!menu||!trigger)return;
-        if(!menu.classList.contains('hidden')){window.closeServerDropdown();return;}
+        if(!menu.classList.contains('hidden')&&menu.dataset.menuOwner==='server'){window.closeServerDropdown();return;}
         const server=serverCache.get(activeServerId);
         if(!server){showSafeToast('Choose a server first.','error');return;}
         const isOwner=server.owner_id===signedInUser?.id;
@@ -1543,18 +1540,15 @@
           html+=item('Create @everyone ping room','fa-bullhorn',"closeServerDropdown();createPingRoom()");
           html+=item('Upload server image','fa-image',"closeServerDropdown();document.getElementById('server-icon-file')?.click()");
         }
-        if(server.invite_code){
-          html+=item('Copy invite code','fa-copy',"copyServerInviteCode()");
-        }
+        if(server.invite_code) html+=item('Copy invite code','fa-copy',"copyServerInviteCode()");
         if(!isOwner&&!server.invite_code) html+='<div class="px-3 py-3 text-xs text-slate-400">No server actions available.</div>';
-        $('server-dropdown-menu-content').innerHTML=html;
+        menu.innerHTML=html;
+        menu.dataset.menuOwner='server';
         menu.classList.remove('hidden');
         trigger.setAttribute('aria-expanded','true');
         const r=trigger.getBoundingClientRect();
-        menu.style.position='fixed';
-        menu.style.zIndex='999999';
         requestAnimationFrame(()=>{
-          menu.style.left=Math.max(8,Math.min(r.left,window.innerWidth-menu.offsetWidth-8))+'px';
+          menu.style.left=Math.max(8,Math.min(r.right-8,window.innerWidth-menu.offsetWidth-8))+'px';
           menu.style.top=Math.max(8,Math.min(r.bottom+4,window.innerHeight-menu.offsetHeight-8))+'px';
         });
       };
@@ -1566,7 +1560,7 @@
         window.closeServerDropdown();
       };
       document.addEventListener('click',e=>{
-        if(!e.target.closest('#server-dropdown-menu')&&!e.target.closest('#server-dropdown-trigger'))window.closeServerDropdown();
+        if(!e.target.closest('#room-context-menu')&&!e.target.closest('#server-dropdown-trigger'))window.closeServerDropdown();
       });
       document.addEventListener('keydown',e=>{if(e.key==='Escape')window.closeServerDropdown();});
 
