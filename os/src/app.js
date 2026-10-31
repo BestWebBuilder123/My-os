@@ -135,10 +135,8 @@ if(id==='games'){
  const browserGames=[
   {name:'Subway Surfers',studio:'SYBO',site:'Poki',genre:'Endless runner',url:'https://poki.com/en/g/subway-surfers',description:'The original browser version by SYBO.'},
   {name:'Temple Run 2',studio:'Imangi Studios',site:'Poki',genre:'Endless runner',url:'https://poki.com/en/g/temple-run-2',description:'The classic endless escape, playable in your browser.'},
-  {name:'Stickman Hook',studio:'Madbox',site:'Poki',genre:'Skill',url:'https://poki.com/en/g/stickman-hook',description:'Swing through levels with precise timing.'},
   {name:'Little Alchemy 2',studio:'Recloak',site:'CrazyGames',genre:'Puzzle / crafting',url:'https://www.crazygames.com/game/little-alchemy-2',description:'Combine elements and discover new creations.'},
-  {name:'Temple Run',studio:'Imangi Studios',site:'Poki',genre:'Endless runner',url:'https://poki.com/en/g/temple-run',description:'The original temple escape game.'},
-  {name:'Moto X3M',studio:'MadPuffers',site:'CrazyGames',genre:'Racing',url:'https://www.crazygames.com/game/moto-x3m',description:'The full browser bike-racing game.'}
+  {name:'Temple Run',studio:'Imangi Studios',site:'Poki',genre:'Endless runner',url:'https://poki.com/en/g/temple-run',description:'The original temple escape game.'}
  ];
  const gameList=root.querySelector('#external-game-list'),gameSearch=root.querySelector('#game-library-search');
  function renderBrowserGames(query=''){
