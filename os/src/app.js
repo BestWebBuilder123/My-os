@@ -132,14 +132,14 @@ function legacy(id,root){if(id==='ixxleffects'){
     });
   });
   Promise.all(parts).then(chunks=>{
-    const encoded=chunks.join('').replace(/\\s/g,'');
+    const encoded=chunks.join('').replace(/\s/g,'');
     const binary=atob(encoded);
     const bytes=Uint8Array.from(binary,char=>char.charCodeAt(0));
     if(typeof DecompressionStream!=='function')throw new Error('This browser does not support bundled editor decompression. Please use an up-to-date Chrome, Edge, or Firefox browser.');
     const stream=new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
     return new Response(stream).text();
   }).then(html=>{
-    if(!/<html[\\s>]/i.test(html)||!/<script[\\s>]/i.test(html))throw new Error('The bundled EffectCraft editor did not pass its HTML validation.');
+    if(!/<html[\s>]/i.test(html)||!/<script[\s>]/i.test(html))throw new Error('The bundled EffectCraft editor did not pass its HTML validation.');
     const baseUrl=new URL('apps/',document.baseURI).href;
     const baseTag='<base href="'+baseUrl.replace(/&/g,'&amp;').replace(/"/g,'&quot;')+'">';
     if(/<head[^>]*>/i.test(html))html=html.replace(/<head[^>]*>/i,head=>head+baseTag);
