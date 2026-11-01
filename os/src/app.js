@@ -117,24 +117,37 @@ function legacy(id,root){if(id==='ixxleffects'){
   root.style.minHeight='0';
   root.style.overflow='hidden';
   const frame=document.createElement('iframe');
-  frame.title='IxxlEffects';
+  frame.title='IxxlEffects · EffectCraft Studio X';
   frame.allow='clipboard-read; clipboard-write';
   frame.style.cssText='position:absolute;inset:0;width:100%;height:100%;border:0;background:#101014';
   root.replaceChildren(frame);
-  const appUrl=new URL('apps/ixxleffects.html',document.baseURI).href;
-  fetch(appUrl,{cache:'no-store'}).then(response=>{
-    if(!response.ok)throw new Error('HTTP '+response.status+' while loading '+appUrl);
-    return response.text();
+  const loading='<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#101014;color:#f4f5fb;font:14px system-ui}main{max-width:480px;padding:28px;text-align:center}p{color:#a7adc0;line-height:1.5}.spin{width:26px;height:26px;border:3px solid #44495c;border-top-color:#a7b5ff;border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 18px}@keyframes spin{to{transform:rotate(360deg)}}</style></head><body><main><div class="spin"></div><h2>Loading EffectCraft Studio X</h2><p>Starting your bundled IxxlEffects editor…</p></main></body></html>';
+  frame.srcdoc=loading;
+  const bundleBase=new URL('apps/effectcraft-bundle/',document.baseURI);
+  const parts=Array.from({length:13},(_,index)=>{
+    const name='part-'+String(index+1).padStart(2,'0')+'.txt';
+    return fetch(new URL(name,bundleBase).href,{cache:'force-cache'}).then(response=>{
+      if(!response.ok)throw new Error(name+' failed to load (HTTP '+response.status+').');
+      return response.text();
+    });
+  });
+  Promise.all(parts).then(chunks=>{
+    const encoded=chunks.join('').replace(/\\s/g,'');
+    const binary=atob(encoded);
+    const bytes=Uint8Array.from(binary,char=>char.charCodeAt(0));
+    if(typeof DecompressionStream!=='function')throw new Error('This browser does not support bundled editor decompression. Please use an up-to-date Chrome, Edge, or Firefox browser.');
+    const stream=new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+    return new Response(stream).text();
   }).then(html=>{
-    if(!/<html[\s>]/i.test(html))throw new Error('The IxxlEffects page did not return an HTML document.');
-    const baseUrl=appUrl.slice(0,appUrl.lastIndexOf('/')+1);
+    if(!/<html[\\s>]/i.test(html)||!/<script[\\s>]/i.test(html))throw new Error('The bundled EffectCraft editor did not pass its HTML validation.');
+    const baseUrl=new URL('apps/',document.baseURI).href;
     const baseTag='<base href="'+baseUrl.replace(/&/g,'&amp;').replace(/"/g,'&quot;')+'">';
     if(/<head[^>]*>/i.test(html))html=html.replace(/<head[^>]*>/i,head=>head+baseTag);
     else html=baseTag+html;
     frame.srcdoc=html;
   }).catch(error=>{
-    const message=String(error&&error.message||error).replace(/[&<>"]/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch]));
-    frame.srcdoc='<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>IxxlEffects load error</title><style>body{margin:0;padding:32px;background:#101014;color:#f5f6ff;font:14px system-ui}h2{margin-top:0}pre{white-space:pre-wrap;overflow-wrap:anywhere;color:#ffb7b7;background:#1d202b;padding:14px;border-radius:10px}</style></head><body><h2>IxxlEffects could not load</h2><p>The app page could not be fetched from the launcher release.</p><pre>'+message+'</pre><p>Close this window, refresh My OS from the launcher, and open IxxlEffects again.</p></body></html>';
+    const message=String(error&&error.message||error).replace(/[&<>"]/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[char]));
+    frame.srcdoc='<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{margin:0;padding:32px;background:#101014;color:#f5f6ff;font:14px system-ui}h2{margin-top:0}pre{white-space:pre-wrap;overflow-wrap:anywhere;color:#ffb7b7;background:#1d202b;padding:14px;border-radius:10px}</style></head><body><h2>IxxlEffects could not start</h2><p>The bundled EffectCraft Studio X files could not be unpacked.</p><pre>'+message+'</pre><p>Close the app, refresh My OS from your launcher, then open IxxlEffects again.</p></body></html>';
   });
   return;
 }if(id==='code-editor'){mountCodeStudio(root);return}if(id==='editor'){mountEditor(root);return}if(id==='files'){mountFiles(root);return}if(id==='ixxl-chat'){const mount=()=>window.mountIxxlChat&&window.mountIxxlChat(root);if(window.mountIxxlChat){mount()}else{const script=document.createElement('script');script.src='apps/ixxl-chat.js';script.onload=mount;script.onerror=()=>{root.innerHTML='<div class="app"><h2>Ixxl Chat</h2><p class="muted">Could not load Ixxl Chat. Check that os/apps/ixxl-chat.js is available.</p></div>'};document.head.appendChild(script)}return}const wrap=(title,body)=>'<div class="app"><h2>'+title+'</h2>'+body+'</div>';let html='';
