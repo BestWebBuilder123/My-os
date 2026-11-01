@@ -126,7 +126,7 @@ function legacy(id,root){if(id==='ixxleffects'){
     if(!response.ok)throw new Error('HTTP '+response.status+' while loading '+appUrl);
     return response.text();
   }).then(html=>{
-    if(!/<html[\\s>]/i.test(html))throw new Error('The IxxlEffects page did not return an HTML document.');
+    if(!/<html[\s>]/i.test(html))throw new Error('The IxxlEffects page did not return an HTML document.');
     const baseUrl=appUrl.slice(0,appUrl.lastIndexOf('/')+1);
     const baseTag='<base href="'+baseUrl.replace(/&/g,'&amp;').replace(/"/g,'&quot;')+'">';
     if(/<head[^>]*>/i.test(html))html=html.replace(/<head[^>]*>/i,head=>head+baseTag);
