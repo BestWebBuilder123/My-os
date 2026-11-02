@@ -8,24 +8,45 @@ window.mountMusicLibrary=function(root){
  results.innerHTML=list.map((t,i)=>'<article class="ml-track"><button class="ml-play" data-play="'+i+'" aria-label="Play">▶</button><div class="ml-track-info"><b>'+esc(t.title)+'</b><small>'+esc(t.creator)+' · '+esc(t.licenseLabel)+'</small></div><a class="ml-download" href="'+esc(t.download)+'" download target="_blank" rel="noopener">↓ Download</a><a class="ml-source" href="'+esc(t.page)+'" target="_blank" rel="noopener">↗</a></article>').join('')};
  async function search(term,genre){
   const n=++token,word=String(term||genre||'').replace(/[(){}\[\]^"~*?:\\/]/g,' ').trim();
-  q('#ml-heading').textContent=word?'Results for “'+word+'”':'Discover music';q('#ml-status').textContent='Searching free licensed tracks…';results.innerHTML='<div class="ml-empty">Loading music…</div>';
-  const license='(licenseurl:http*publicdomain*zero* OR licenseurl:http*by/4.0* OR licenseurl:http*by-sa/4.0*)';
-  const query='mediatype:audio AND '+license+(word?' AND ('+word.split(/\s+/).map(x=>'"'+x+'"').join(' AND ')+')':'');
-  const url='https://archive.org/advancedsearch.php?q='+encodeURIComponent(query)+'&fl[]=identifier&fl[]=title&fl[]=creator&fl[]=licenseurl&rows=20&page=1&output=json';
+  q('#ml-heading').textContent=word?'Results for “'+word+'”':'Discover music';
+  q('#ml-status').textContent='Searching free licensed tracks…';
+  results.innerHTML='<div class="ml-empty">Loading music…</div>';
+  // Search broadly, then verify the exact reuse license from each item's metadata.
+  const query='mediatype:audio AND (licenseurl:http*by* OR licenseurl:http*publicdomain*)'+(word?' AND ('+word.split(/\s+/).map(x=>'"'+x+'"').join(' AND ')+')':'');
+  const params=new URLSearchParams({q:query,rows:'12',page:'1',output:'json'});
+  ['identifier','title','creator','licenseurl'].forEach(x=>params.append('fl[]',x));
   try{
-   const res=await fetch(url);if(!res.ok)throw Error('Search failed');const data=await res.json();if(n!==token)return;
-   const docs=data.response?.docs||[];
-   const found=await Promise.all(docs.map(async d=>{try{
-    const mr=await fetch('https://archive.org/metadata/'+encodeURIComponent(d.identifier));if(!mr.ok)return null;
-    const meta=await mr.json(),lic=meta.metadata?.licenseurl||d.licenseurl||'';if(!allowed(lic))return null;
-    const fs=(meta.files||[]).filter(f=>!f.private&&!f.source&&/\.(mp3|ogg|oga|flac|wav)$/i.test(f.name||'')&&!/sample|spectrogram|thumbnail/i.test(f.name||''));
-    fs.sort((a,b)=>({mp3:0,ogg:1,oga:1,flac:2,wav:3}[(a.name.split('.').pop()||'').toLowerCase()]??9)-({mp3:0,ogg:1,oga:1,flac:2,wav:3}[(b.name.split('.').pop()||'').toLowerCase()]??9));
-    if(!fs.length)return null;
-    const label=/publicdomain/i.test(lic)?'Public domain':/by-sa/i.test(lic)?'CC BY-SA':'CC BY';
-    return {title:meta.metadata?.title||d.title||'Untitled',creator:Array.isArray(meta.metadata?.creator)?meta.metadata.creator.join(', '):(meta.metadata?.creator||d.creator||'Unknown artist'),licenseLabel:label,download:'https://archive.org/download/'+encodeURIComponent(d.identifier)+'/'+encodeURIComponent(fs[0].name),page:'https://archive.org/details/'+encodeURIComponent(d.identifier)};
-   }catch{return null}}));
-   if(n!==token)return;const valid=found.filter(Boolean);render(valid);q('#ml-status').textContent=valid.length+' tracks available · Free licenses';
-  }catch(e){if(n!==token)return;results.innerHTML='<div class="ml-empty">The catalog could not load. Check your connection and try again.</div>';q('#ml-status').textContent='Catalog unavailable';console.warn(e)}
+   const res=await fetch('https://archive.org/advancedsearch.php?'+params.toString(),{credentials:'omit',cache:'no-store'});
+   if(!res.ok)throw Error('Search request failed (HTTP '+res.status+')');
+   const data=await res.json();
+   if(n!==token)return;
+   if(data.responseHeader?.status!==0)throw Error('The catalog returned an invalid search response');
+   const docs=data.response?.docs||[],found=[];
+   // Small batches are more reliable on mobile connections.
+   for(let i=0;i<docs.length;i+=3){
+    const batch=await Promise.all(docs.slice(i,i+3).map(async d=>{try{
+     const mr=await fetch('https://archive.org/metadata/'+encodeURIComponent(d.identifier),{credentials:'omit',cache:'no-store'});
+     if(!mr.ok)return null;
+     const meta=await mr.json(),lic=meta.metadata?.licenseurl||d.licenseurl||'';
+     if(!allowed(lic))return null;
+     const fs=(meta.files||[]).filter(f=>!f.private&&!f.source&&/\.(mp3|ogg|oga|flac|wav)$/i.test(f.name||'')&&!/sample|spectrogram|thumbnail/i.test(f.name||''));
+     fs.sort((a,b)=>({mp3:0,ogg:1,oga:1,flac:2,wav:3}[(a.name.split('.').pop()||'').toLowerCase()]??9)-({mp3:0,ogg:1,oga:1,flac:2,wav:3}[(b.name.split('.').pop()||'').toLowerCase()]??9));
+     if(!fs.length)return null;
+     const label=/publicdomain/i.test(lic)?'Public domain':/by-sa/i.test(lic)?'CC BY-SA':'CC BY';
+     return {title:meta.metadata?.title||d.title||'Untitled',creator:Array.isArray(meta.metadata?.creator)?meta.metadata.creator.join(', '):(meta.metadata?.creator||d.creator||'Unknown artist'),licenseLabel:label,download:'https://archive.org/download/'+encodeURIComponent(d.identifier)+'/'+encodeURIComponent(fs[0].name),page:'https://archive.org/details/'+encodeURIComponent(d.identifier)};
+    }catch{return null}}));
+    found.push(...batch.filter(Boolean));
+    if(n!==token)return;
+   }
+   if(n!==token)return;
+   render(found);
+   q('#ml-status').textContent=found.length+' tracks available · Free licenses';
+  }catch(e){
+   if(n!==token)return;
+   results.innerHTML='<div class="ml-empty">The catalog could not load. '+esc(e&&e.message||'Check your connection and retry.')+'</div>';
+   q('#ml-status').textContent='Catalog unavailable';
+   console.warn('Music Library catalog error:',e);
+  }
  }
  q('#ml-search-btn').onclick=()=>search(q('#ml-query').value.trim(),'');
  q('#ml-query').onkeydown=e=>{if(e.key==='Enter')search(q('#ml-query').value.trim(),'')};
