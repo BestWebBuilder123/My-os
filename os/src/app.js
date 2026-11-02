@@ -187,64 +187,44 @@ function legacy(id,root){if(id==='activity'){mountActivityTracker(root);return;}
   const fxStyle=document.createElement('style');
   fxStyle.textContent='.ec-fx-settings{display:grid;grid-template-columns:1fr 1fr;gap:8px 10px;margin-top:10px;padding-top:9px;border-top:1px solid #303747}.ec-fx-field{min-width:0}.ec-fx-field label{display:block;font-size:9px;color:#929bad;margin:0 0 5px;font-weight:650}.ec-fx-control{display:flex;gap:5px;align-items:center}.ec-fx-control input,.ec-fx-control select{box-sizing:border-box;width:100%;min-width:0;padding:6px;background:#0f1219;border:1px solid #303747;border-radius:6px;color:#e5e8f0;font-size:10px}.ec-fx-control input[type=color]{height:29px;padding:2px}.ec-fx-kf{flex:none;border:1px solid #564a83;background:#2a2444;color:#bbaaff;border-radius:5px;padding:4px 6px;font-size:9px}.ec-fx-kf.active{background:#59488d;color:white}@media(max-width:520px){.ec-fx-settings{grid-template-columns:1fr}}';
   document.head.appendChild(fxStyle);
-  // Use EffectCraft's native per-parameter settings renderer; each shake has distinct controls.
-  Object.assign(FX_PARAMETER_SETTINGS,{
-   oscillate:[['frequency','Frequency (Hz)','number',2,.1,20,.1],['rotation','Rotation','number',2,0,30,.1],['xAmount','Horizontal amount','number',100,0,200,1],['yAmount','Vertical amount','number',70,0,200,1],['phase','Phase offset','number',0,-360,360,1]],
-   autoshake:[['frequency','Change rate','number',7,.5,30,.1],['rotation','Rotation','number',2,0,30,.1],['xAmount','Horizontal amount','number',100,0,200,1],['yAmount','Vertical amount','number',100,0,200,1],['smoothness','Smoothness','number',55,0,100,1]],
-   handheld:[['frequency','Drift speed','number',1.8,.1,12,.1],['rotation','Rotation','number',1.2,0,20,.1],['xAmount','Horizontal amount','number',55,0,200,1],['yAmount','Vertical amount','number',45,0,200,1],['roughness','Micro jitter','number',35,0,100,1]],
-   impact:[['frequency','Impact frequency','number',9,.5,30,.1],['rotation','Rotation','number',4,0,30,.1],['xAmount','Horizontal amount','number',100,0,200,1],['yAmount','Vertical amount','number',100,0,200,1],['decay','Falloff speed','number',7,.5,25,.1]]
-  });
-  // Four different motion models: periodic, random smooth, handheld drift, and decaying impact.
-  window.applyShake=function(layer,tr){
-   let x=tr.x,y=tr.y,rotation=tr.rotation;
-   const smoothNoise=(time,seed)=>{const n=Math.floor(time),f=time-n,u=f*f*(3-2*f),hash=k=>{const z=Math.sin((k+seed)*127.1+seed*311.7)*43758.5453;return (z-Math.floor(z))*2-1};return hash(n)+(hash(n+1)-hash(n))*u};
-   for(const fx of layer.effects||[]){
-    if(fx.enabled===false||!['oscillate','autoshake','handheld','impact'].includes(fx.type))continue;
-    const amount=Math.max(0,Number(effectValue(layer,fx))||0)*.22,t=Math.max(0,State.currentTime-layer.startTime),hz=Math.max(.1,Number(effectParameter(layer,fx,'frequency')||2)),rot=Number(effectParameter(layer,fx,'rotation')||0),xm=Number(effectParameter(layer,fx,'xAmount')??100)/100,ym=Number(effectParameter(layer,fx,'yAmount')??100)/100;
-    let dx=0,dy=0,dr=0;
-    if(fx.type==='oscillate'){
-     const p=t*hz*Math.PI*2+(Number(effectParameter(layer,fx,'phase'))||0)*Math.PI/180;
-     dx=Math.sin(p)*amount*2*xm;dy=Math.sin(p+Math.PI/2)*amount*1.4*ym;dr=Math.sin(p)*rot*amount/12;
-    }else if(fx.type==='autoshake'){
-     const smooth=Math.max(0,Math.min(1,Number(effectParameter(layer,fx,'smoothness')??55)/100)),rate=Math.max(.5,hz*(1.5-smooth));
-     const nx=smoothNoise(t*rate,17+String(layer.id).length),ny=smoothNoise(t*rate,83+String(layer.id).length);
-     dx=nx*amount*2*xm;dy=ny*amount*2*ym;dr=smoothNoise(t*rate,149)*rot*amount/10;
-    }else if(fx.type==='handheld'){
-     const rough=Math.max(0,Math.min(1,Number(effectParameter(layer,fx,'roughness')??35)/100)),drift=t*hz;
-     const slowX=Math.sin(drift*1.7+.4)+Math.sin(drift*.63+2.1)*.45,slowY=Math.cos(drift*1.3+1.2)+Math.sin(drift*.81)*.35;
-     dx=(slowX*.55+smoothNoise(t*(hz*5+2),211)*rough*.45)*amount*xm;
-     dy=(slowY*.55+smoothNoise(t*(hz*4+2),307)*rough*.45)*amount*ym;
-     dr=(Math.sin(drift*1.1)*.6+smoothNoise(t*(hz*3+1),401)*rough*.4)*rot*amount/12;
-    }else{
-     const decay=Math.max(.1,Number(effectParameter(layer,fx,'decay')||7)),envelope=Math.exp(-t*decay),p=t*hz*Math.PI*2,pulse=Math.sin(p)*envelope,secondary=Math.sin(p*1.7+.35)*envelope*.22;
-     dx=(pulse+secondary)*amount*2*xm;dy=(Math.cos(p*.82)*envelope+secondary)*amount*1.6*ym;dr=pulse*rot*amount/8;
-    }
-    x+=dx;y+=dy;rotation+=dr;
-   }
-   return {...tr,x,y,rotation};
+  const fxDefs={
+   glow:[['color','Glow color','color','#9b83ff'],['spread','Spread','number',8,0,100,1],['opacity','Opacity','number',100,0,100,1]],
+   shadow:[['color','Shadow color','color','#000000'],['distance','Distance','number',8,0,100,1],['angle','Angle','number',45,-180,180,1],['opacity','Opacity','number',75,0,100,1]],
+   oscillate:[['frequency','Frequency','number',8,.2,40,.1],['rotation','Rotation','number',1,0,30,.1],['xAmount','Horizontal','number',100,0,200,1],['yAmount','Vertical','number',70,0,200,1],['phase','Phase','number',0,-360,360,1]],
+   autoshake:[['frequency','Frequency','number',8,.2,40,.1],['rotation','Rotation','number',1,0,30,.1],['xAmount','Horizontal','number',100,0,200,1],['yAmount','Vertical','number',100,0,200,1],['smoothness','Smoothness','number',45,0,100,1]],
+   handheld:[['frequency','Frequency','number',12,.2,60,.1],['rotation','Rotation','number',1,0,30,.1],['xAmount','Horizontal','number',80,0,200,1],['yAmount','Vertical','number',80,0,200,1],['roughness','Roughness','number',65,0,100,1]],
+   impact:[['frequency','Frequency','number',8,.2,40,.1],['rotation','Rotation','number',2,0,30,.1],['xAmount','Horizontal','number',100,0,200,1],['yAmount','Vertical','number',100,0,200,1],['decay','Decay','number',5,.1,20,.1]],
+   tint:[['color','Tint color','color','#7c68ff'],['opacity','Opacity','number',50,0,100,1]],
+   vignette:[['size','Size','number',68,10,100,1],['softness','Softness','number',12,0,60,1]],
+   glitch:[['slices','Slices','number',30,2,120,1],['speed','Speed','number',1,.1,10,.1]],
+   wave:[['frequency','Frequency','number',.035,.005,.2,.005],['amplitude','Amplitude','number',1,0,5,.1],['speed','Speed','number',5,0,20,.1]],
+   echo:[['offset','Offset','number',8,0,100,1],['opacity','Opacity','number',35,0,100,1]]
   };
+  function ecFxKey(fx,p){return 'fx_'+fx.id+'_'+p}
+  function ecFxValue(layer,fx,p,def){return evalProp(layer,ecFxKey(fx,p),fx[p]===undefined?def:fx[p])}
+  function ecFxSet(id,p,value){const l=activeLayer(),fx=l&&l.effects.find(x=>x.id===id);if(!fx)return;const key=ecFxKey(fx,p),arr=l.keyframes&&l.keyframes[key]||[];if(State.autoKey||arr.length){l.keyframes=l.keyframes||{};l.keyframes[key]=arr;let k=arr.find(x=>Math.abs(x.time-State.currentTime)<.0005);if(!k){k={id:uid(),time:State.currentTime,value:value,ease:State.defaultEase};arr.push(k)}else k.value=value}else fx[p]=value;if(p==='color'&&fx.type==='glow')l.glowColor=value;drawFrame()}
+  function ecFxToggle(id,p,def){const l=activeLayer(),fx=l&&l.effects.find(x=>x.id===id);if(!fx)return;const key=ecFxKey(fx,p);pushHistory();l.keyframes=l.keyframes||{};const arr=l.keyframes[key]=l.keyframes[key]||[],i=arr.findIndex(k=>Math.abs(k.time-State.currentTime)<.0005);if(i>=0)arr.splice(i,1);else arr.push({id:uid(),time:State.currentTime,value:ecFxValue(l,fx,p,def),ease:State.defaultEase});if(!arr.length)delete l.keyframes[key];renderInspector();renderTimeline();drawFrame()}
+  function ecAddFxSettings(){const l=activeLayer(),body=document.getElementById('inspectorBody');if(!l||!body||State.inspectorTab!=='effects')return;body.querySelectorAll('.fx-control').forEach(card=>{if(card.querySelector('.ec-fx-settings'))return;const action=card.querySelector('[onclick*="toggleEffectEnabled"]')?.getAttribute('onclick')||'',m=action.match(/toggleEffectEnabled\('([^']+)'\)/);if(!m)return;const fx=l.effects.find(x=>x.id===m[1]);if(!fx)return;const defs=fxDefs[fx.type]||[];if(!defs.length)return;const grid=document.createElement('div');grid.className='ec-fx-settings';defs.forEach(([p,label,type,def,min,max,step])=>{const val=ecFxValue(l,fx,p,def),key=ecFxKey(fx,p),animated=(l.keyframes&&l.keyframes[key]||[]).length>0,field=document.createElement('div');field.className='ec-fx-field';const lab=document.createElement('label');lab.textContent=label;const row=document.createElement('div');row.className='ec-fx-control';let input;if(type==='color'){input=document.createElement('input');input.type='color';input.value=val||def}else if(type==='select'){input=document.createElement('select');min.forEach(v=>{const o=document.createElement('option');o.value=v;o.textContent=v;o.selected=v===val;input.appendChild(o)})}else{input=document.createElement('input');input.type='number';input.min=min;input.max=max;input.step=step;input.value=Number(val)}input.addEventListener('focus',()=>pushHistory());input.addEventListener(type==='color'?'input':'change',()=>ecFxSet(fx.id,p,type==='number'?Number(input.value):input.value));const kf=document.createElement('button');kf.type='button';kf.className='ec-fx-kf'+(animated?' active':'');kf.textContent='◇ KF';kf.title='Animate '+label;kf.onclick=()=>ecFxToggle(fx.id,p,def);row.append(input,kf);field.append(lab,row);grid.appendChild(field)});card.appendChild(grid)})}
+  const originalInspector=renderInspector;
+  window.renderInspector=function(){originalInspector();ecAddFxSettings()};
+  const originalWorldTransform=worldTransform;
+  window.worldTransform=function(layer,seen){const tr=originalWorldTransform(layer,seen);let x=tr.x,y=tr.y,rotation=tr.rotation;for(const fx of layer.effects||[]){if(fx.enabled===false||!['oscillate','autoshake','handheld','impact'].includes(fx.type))continue;const amp=(Number(effectValue(layer,fx))||0)*.22,hz=Math.max(.2,Math.min(60,Number(ecFxValue(layer,fx,'frequency',8))||8)),t=Math.max(0,State.currentTime-layer.startTime),phase=t*hz*Math.PI*2+(Number(ecFxValue(layer,fx,'phase',0))||0)*Math.PI/180,seed=String(layer.id||'').split('').reduce((n,c)=>n+c.charCodeAt(0),0),u=Math.sin(phase+seed*.013),v=Math.cos(phase*.73+seed*.021),rot=Number(ecFxValue(layer,fx,'rotation',1))||0,xm=Number(ecFxValue(layer,fx,'xAmount',100))/100,ym=Number(ecFxValue(layer,fx,'yAmount',100))/100;let dx=0,dy=0,dr=0;if(fx.type==='oscillate'){const p=t*hz*Math.PI*2+(Number(ecFxValue(layer,fx,'phase',0))||0)*Math.PI/180;dx=Math.sin(p)*amp*2*xm;dy=Math.sin(p+Math.PI/2)*amp*1.4*ym;dr=Math.sin(p)*rot*amp/12}else if(fx.type==='autoshake'){const sm=Math.max(0,Math.min(1,Number(ecFxValue(layer,fx,'smoothness',45))/100)),rate=hz*(1.5-sm),n=Math.floor(t*rate),f=t*rate-n,noise=(k)=>{const z=Math.sin((k+seed)*127.1+seed*311.7)*43758.5453;return (z-Math.floor(z))*2-1},blend=f*f*(3-2*f),nx=noise(n)+(noise(n+1)-noise(n))*blend,ny=noise(n+17)+(noise(n+18)-noise(n+17))*blend;dx=nx*amp*2*xm;dy=ny*amp*2*ym;dr=noise(n+31)*rot*amp/10}else if(fx.type==='handheld'){const rough=Math.max(0,Math.min(1,Number(ecFxValue(layer,fx,'roughness',65))/100)),d=t*hz,sx=Math.sin(d*1.7+.4)+Math.sin(d*.63+2.1)*.45,sy=Math.cos(d*1.3+1.2)+Math.sin(d*.81)*.35,jx=Math.sin(t*(hz*5+2)+seed)*rough*.45,jy=Math.cos(t*(hz*4+2)+seed*.7)*rough*.45;dx=(sx*.55+jx)*amp*xm;dy=(sy*.55+jy)*amp*ym;dr=(Math.sin(d*1.1)*.6+Math.sin(t*(hz*3+1)+seed)*rough*.4)*rot*amp/12}else{const decay=Math.max(.1,Number(ecFxValue(layer,fx,'decay',5))||5),fade=Math.exp(-t*decay),p=t*hz*Math.PI*2,pulse=Math.sin(p)*fade;dx=pulse*amp*2*xm;dy=Math.cos(p*.82)*fade*amp*1.6*ym;dr=pulse*rot*amp/8}x+=dx;y+=dy;rotation+=dr}return{...tr,x,y,rotation}};
   Object.assign(FX,{
    oscillate:{label:'Oscillate',min:0,max:100,step:1,def:0,unit:'%'},
    autoshake:{label:'Auto Shake',min:0,max:100,step:1,def:0,unit:'%'},
    handheld:{label:'Handheld Shake',min:0,max:100,step:1,def:0,unit:'%'},
    impact:{label:'Impact Shake',min:0,max:100,step:1,def:0,unit:'%'}
   });
-  // Register the shake effects in the editor's own FX registry, then rebuild its native library.
-  // Appending DOM nodes alone is unreliable because buildFxLibrary() replaces the entire library.
-  if(typeof FX_GROUPS!=='undefined'&&typeof buildFxLibrary==='function'&&typeof FX!=='undefined'){
-   FX_GROUPS['Motion & Shake']=['oscillate','autoshake','handheld','impact'];
-   buildFxLibrary();
-  }else{
-   const fxLibrary=document.getElementById('fxLibrary');
-   if(fxLibrary){
-    const group=document.createElement('div');group.className='fx-group';
-    const title=document.createElement('div');title.className='fx-group-title';title.textContent='Motion & Shake';group.appendChild(title);
-    [['oscillate','Oscillate'],['autoshake','Auto Shake'],['handheld','Handheld Shake'],['impact','Impact Shake']].forEach(([type,label])=>{
-     const item=document.createElement('div');item.className='fx-item';item.dataset.fx=type;item.innerHTML=label+' <span>＋</span>';
-     item.addEventListener('click',()=>addEffectToSelected(type));group.appendChild(item);
-    });
-    fxLibrary.appendChild(group);
-   }
+  // Add the shake category to the native effect registry without removing existing groups.
+  try{if(typeof FX_GROUPS!=='undefined'&&typeof buildFxLibrary==='function'){FX_GROUPS['Motion & Shake']=['oscillate','autoshake','handheld','impact'];buildFxLibrary()}}catch(registryError){console.warn('Shake category registration skipped',registryError)}
+  const fxLibrary=document.getElementById('fxLibrary');
+  if(fxLibrary){
+   let group=[...fxLibrary.querySelectorAll('.fx-group')].find(g=>/motion|shake/i.test(g.querySelector('.fx-group-title')?.textContent||''));
+   if(!group){group=document.createElement('div');group.className='fx-group';const title=document.createElement('div');title.className='fx-group-title';title.textContent='Motion & Shake';group.appendChild(title);fxLibrary.appendChild(group)}
+   [['oscillate','Oscillate'],['autoshake','Auto Shake'],['handheld','Handheld Shake'],['impact','Impact Shake']].forEach(([type,label])=>{
+    if(fxLibrary.querySelector('[data-fx="'+type+'"]'))return;
+    const item=document.createElement('div');item.className='fx-item';item.dataset.fx=type;item.innerHTML=label+' <span>＋</span>';item.addEventListener('click',()=>addEffectToSelected(type));group.appendChild(item)
+   });
   }
   const nav=document.querySelector('.topbar .menu');if(nav&&!document.getElementById('ecAutoCaptions')){const b=document.createElement('button');b.id='ecAutoCaptions';b.textContent='Auto captions';b.onclick=ecOpenCaptions;nav.appendChild(b)}
   function ecOpenCaptions(){let box=document.getElementById('ecCaptionPanel');if(box){box.remove();return}box=document.createElement('div');box.id='ecCaptionPanel';box.style.cssText='position:fixed;z-index:99999;right:18px;top:62px;width:min(390px,calc(100vw - 36px));padding:18px;border:1px solid #45495b;border-radius:16px;background:#171923;color:#f4f5fb;box-shadow:0 18px 60px #0009;font:13px system-ui';box.innerHTML='<b>Auto captions</b><button id="ecCapClose" style="float:right">×</button><p style="color:#aeb4c7;line-height:1.5">Live speech-to-text. Play video audio through speakers while the microphone listens. Chrome speech recognition listens to the microphone; it cannot directly read the imported video audio track.</p><select id="ecCapLang" style="width:100%;padding:9px"><option value="en-US">English (US)</option><option value="en-GB">English (UK)</option><option value="es-ES">Spanish</option><option value="fr-FR">French</option><option value="pt-BR">Portuguese</option></select><p id="ecCapStatus">Ready to listen.</p><div id="ecCapText" style="max-height:120px;overflow:auto;padding:9px;background:#10121a">Recognized speech appears here.</div><div style="display:flex;gap:8px;margin-top:10px"><button id="ecCapStart">Start listening</button><button id="ecCapStop" disabled>Stop</button><button id="ecCapAdd" disabled>Add captions</button></div>';document.body.appendChild(box);let rec=null,finals=[],interim='';const status=box.querySelector('#ecCapStatus'),txt=box.querySelector('#ecCapText'),start=box.querySelector('#ecCapStart'),stop=box.querySelector('#ecCapStop'),add=box.querySelector('#ecCapAdd');box.querySelector('#ecCapClose').onclick=()=>{try{rec?.stop()}catch{}box.remove()};const SR=window.SpeechRecognition||window.webkitSpeechRecognition;if(!SR){status.textContent='Speech recognition is not supported in this browser.';start.disabled=true;return}rec=new SR();rec.continuous=true;rec.interimResults=true;rec.onstart=()=>{status.textContent='Listening… play the video audio now.';start.disabled=true;stop.disabled=false};rec.onresult=e=>{interim='';for(let i=e.resultIndex;i<e.results.length;i++){const phrase=e.results[i][0].transcript.trim();if(e.results[i].isFinal&&phrase)finals.push({text:phrase,time:State.currentTime});else interim+=phrase+' '}txt.textContent=finals.map(x=>x.text).join(' ')+(interim?' '+interim:'');add.disabled=!finals.length};rec.onerror=e=>{status.textContent='Recognition error: '+e.error;start.disabled=false;stop.disabled=true};rec.onend=()=>{start.disabled=false;stop.disabled=true;if(finals.length)status.textContent=finals.length+' caption segment(s) ready.'};start.onclick=()=>{try{rec.lang=box.querySelector('#ecCapLang').value;rec.start()}catch(e){status.textContent=e.message}};stop.onclick=()=>rec.stop();add.onclick=()=>{if(!finals.length)return;pushHistory();const total=Math.max(.1,State.project.duration);finals.forEach((entry,i)=>{const t=clamp(entry.time,0,total-.1),layer=makeLayer('text',{name:'Caption '+(i+1),text:entry.text,fontSize:54,fontFamily:'Arial',fontWeight:700,align:'center',color:'#ffffff',stroke:'#000000',strokeWidth:3,width:1600,height:110,x:State.project.width/2,y:State.project.height*.86,startTime:t,duration:Math.max(.6,Math.min(3,total-t))});State.layers.push(layer)});renderTimeline();renderInspector();drawFrame();status.textContent='Added '+finals.length+' caption layers.';add.disabled=true}}
