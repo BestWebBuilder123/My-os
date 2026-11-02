@@ -3,6 +3,24 @@
 window.mountMusicLibrary=function(root){
  const q=s=>root.querySelector(s), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
  const results=q('#ml-results'),audio=q('#audio-player');let token=0,tracks=[],local=[];
+ const archiveJson=async url=>{
+  let directError;
+  try{
+   const r=await fetch(url,{credentials:'omit',cache:'no-store'});
+   if(!r.ok)throw Error('Internet Archive HTTP '+r.status);
+   return await r.json();
+  }catch(e){directError=e}
+  // Some networks block archive.org or its CORS response. Retry public JSON
+  // through AllOrigins; only public catalog/metadata URLs are sent.
+  try{
+   const proxy='https://api.allorigins.win/raw?url='+encodeURIComponent(url);
+   const r=await fetch(proxy,{credentials:'omit',cache:'no-store'});
+   if(!r.ok)throw Error('Fallback route HTTP '+r.status);
+   return await r.json();
+  }catch(e){
+   throw Error('Direct request: '+(directError?.message||'blocked')+'; fallback request: '+(e?.message||'blocked'));
+  }
+ };
  const allowed=u=>/publicdomain\/(zero|mark)|creativecommons\.org\/licenses\/(by|by-sa)\/(1\.0|2\.0|3\.0|4\.0)/i.test(String(u||''));
  const render=list=>{tracks=list;if(!list.length){results.innerHTML='<div class="ml-empty">No matching tracks found. Try another search.</div>';return}
  results.innerHTML=list.map((t,i)=>'<article class="ml-track"><button class="ml-play" data-play="'+i+'" aria-label="Play">▶</button><div class="ml-track-info"><b>'+esc(t.title)+'</b><small>'+esc(t.creator)+' · '+esc(t.licenseLabel)+'</small></div><a class="ml-download" href="'+esc(t.download)+'" download target="_blank" rel="noopener">↓ Download</a><a class="ml-source" href="'+esc(t.page)+'" target="_blank" rel="noopener">↗</a></article>').join('')};
@@ -16,18 +34,15 @@ window.mountMusicLibrary=function(root){
   const params=new URLSearchParams({q:query,rows:'12',page:'1',output:'json'});
   ['identifier','title','creator','licenseurl'].forEach(x=>params.append('fl[]',x));
   try{
-   const res=await fetch('https://archive.org/advancedsearch.php?'+params.toString(),{credentials:'omit',cache:'no-store'});
-   if(!res.ok)throw Error('Search request failed (HTTP '+res.status+')');
-   const data=await res.json();
+   const data=await archiveJson('https://archive.org/advancedsearch.php?'+params.toString());
    if(n!==token)return;
    if(data.responseHeader?.status!==0)throw Error('The catalog returned an invalid search response');
    const docs=data.response?.docs||[],found=[];
    // Small batches are more reliable on mobile connections.
    for(let i=0;i<docs.length;i+=3){
     const batch=await Promise.all(docs.slice(i,i+3).map(async d=>{try{
-     const mr=await fetch('https://archive.org/metadata/'+encodeURIComponent(d.identifier),{credentials:'omit',cache:'no-store'});
-     if(!mr.ok)return null;
-     const meta=await mr.json(),lic=meta.metadata?.licenseurl||d.licenseurl||'';
+     const meta=await archiveJson('https://archive.org/metadata/'+encodeURIComponent(d.identifier));
+     const lic=meta.metadata?.licenseurl||d.licenseurl||'';
      if(!allowed(lic))return null;
      const fs=(meta.files||[]).filter(f=>!f.private&&!f.source&&/\.(mp3|ogg|oga|flac|wav)$/i.test(f.name||'')&&!/sample|spectrogram|thumbnail/i.test(f.name||''));
      fs.sort((a,b)=>({mp3:0,ogg:1,oga:1,flac:2,wav:3}[(a.name.split('.').pop()||'').toLowerCase()]??9)-({mp3:0,ogg:1,oga:1,flac:2,wav:3}[(b.name.split('.').pop()||'').toLowerCase()]??9));
