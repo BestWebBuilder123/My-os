@@ -328,3 +328,17 @@ input,textarea,[contenteditable=true],#vs-code{user-select:text;-webkit-user-sel
 .wallpaper-settings-preview{height:145px;width:100%;border:1px solid #ffffff30;border-radius:14px;background:linear-gradient(135deg,#10182f,#526ba0);background-position:center;background-size:cover;background-repeat:no-repeat;display:grid;place-items:center;color:#d8e1f5;font-size:12px;overflow:hidden}
 .wallpaper-upload-label{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
 .wallpaper-upload-label input{max-width:100%;font-size:12px}
+
+/* Dock layout fixes: side docks stay centered vertically and stack controls instead of stretching horizontally. */
+.dock.dock-vertical{flex-direction:column;align-items:center;justify-content:flex-start;gap:6px;max-height:calc(100dvh - 24px);max-width:calc(100vw - 24px);overflow-y:auto;overflow-x:hidden;padding:10px 8px}
+.dock.dock-vertical .dock-apps{flex-direction:column;align-items:center;gap:5px}
+.dock.dock-vertical .dock-divider{width:28px;height:1px;min-height:1px}
+.dock.dock-vertical .dock-spacer{width:1px;height:0;min-height:0;flex:1}
+.dock.dock-vertical .dock-clock{max-width:64px;font-size:10px;white-space:nowrap}
+.dock.dock-win11{gap:8px;padding:10px 16px;border:1px solid #ffffff30;border-radius:22px;background:color-mix(in srgb,var(--surface) 68%,transparent);box-shadow:0 12px 38px #0003,inset 0 1px #ffffff28;backdrop-filter:blur(30px) saturate(1.4)}
+.dock.dock-win11 button{border-radius:13px;transition:transform .16s ease,background .16s ease}
+.dock.dock-win11 button:hover{transform:translateY(-3px);background:#ffffff20}
+.dock.dock-win11 .dock-apps{gap:7px}
+.dock.dock-win11.dock-vertical{padding:12px 9px}
+.dock.dock-win11.dock-vertical button:hover{transform:translateX(3px)}
+@media(max-width:560px){.dock.dock-vertical{padding:8px 6px}.dock.dock-vertical button{width:38px;height:38px;font-size:18px}.dock.dock-vertical .dock-clock{font-size:9px}}
