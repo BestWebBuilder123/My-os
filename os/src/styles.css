@@ -387,3 +387,6 @@ input,textarea,[contenteditable=true],#vs-code{user-select:text;-webkit-user-sel
  .dock.dock-win11:not(.dock-vertical) .dock-tray button{width:27px;font-size:13px}
  .dock.dock-win11:not(.dock-vertical) .dock-clock{min-width:48px;font-size:9px!important}
 }
+
+/* Keep the Windows 11 taskbar's top/bottom choice controlled by Dock Position settings. */
+.dock.dock-win11:not(.dock-vertical){bottom:0;top:auto}
