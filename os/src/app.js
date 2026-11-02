@@ -251,28 +251,7 @@ if(id==='terminal'){root.querySelector('#terminal-input').onkeydown=e=>{if(e.key
 if(id==='files'||id==='images'){let items=JSON.parse(localStorage.getItem('myos-file-names')||'[]');const draw=()=>root.querySelector('#file-list').innerHTML=items.map(x=>'<div class="file-item">▧ '+x+'</div>').join('')||'<p class="muted">No imported files.</p>';root.querySelector('#import-file').onclick=()=>root.querySelector('#file-picker').click();root.querySelector('#file-picker').onchange=e=>{items.push(...[...e.target.files].map(f=>f.name));localStorage.setItem('myos-file-names',JSON.stringify(items));draw()};draw()}
 }
 function openApp(id){if(open.has(id)){let old=open.get(id);old.classList.remove('minimized');focus(old);dockState();return}let app=allApps().find(x=>x[0]===id);if(!app)return;let w=document.createElement('section');w.className='window';w.dataset.app=id;w.style.left=Math.max(12,90+open.size*24)+'px';w.style.top=Math.max(12,65+open.size*20)+'px';w.style.zIndex=++z;if(id==='photoeditor'||id==='ixxleffects'){w.style.width='min(1320px, calc(100vw - 24px))';w.style.height='min(860px, calc(100vh - 90px))';w.style.left='12px';w.style.top='12px'}const canPopOut=['browser','editor','code-editor','photoeditor','effectcraft','ixxleffects','ixxl-chat','vus-chat','games'].includes(id);w.innerHTML='<header class="window-header"><div class="traffic"><button class="close" title="Close">×</button><button class="min" title="Minimize">−</button><button class="max" title="Maximize">□</button></div><b>'+app[2]+'</b>'+(canPopOut?'<button class="x" title="Open in a new full-screen tab" aria-label="Open in a new full-screen tab">↗</button>':'')+'</header><div class="window-content"></div><div class="resize-handle"></div>';$('#windows').append(w);open.set(id,w);let content=w.querySelector('.window-content');try{legacy(id,content)}catch(err){console.error('App mount failed:',id,err);content.innerHTML='<div class="app"><h2>'+app[2]+'</h2><p class="muted">This app hit an error while starting.</p><pre style="white-space:pre-wrap;overflow-wrap:anywhere;color:#ffb7b7;font-size:12px">'+String(err&&err.message||err).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))+'</pre></div>'}w.querySelector('.close').onclick=()=>{w.classList.add('closing');setTimeout(()=>{w.remove();open.delete(id);dockState()},180)};const popout=w.querySelector('.x');if(popout)popout.onclick=()=>openAppInNewTab(id);w.querySelector('.min').onclick=()=>{w.classList.add('minimized');w.classList.remove('active');dockState()};w.querySelector('.max').onclick=()=>toggleMax(w);w.querySelector('.window-header').ondblclick=e=>{if(!e.target.closest('button'))toggleMax(w)};w.onpointerdown=()=>focus(w);const header=w.querySelector('.window-header');let drag=null;header.addEventListener('pointerdown',e=>{if(e.button!==0||e.target.closest('button')||w.classList.contains('maximized'))return;focus(w);const rect=w.getBoundingClientRect();drag={id:e.pointerId,x:e.clientX-rect.left,y:e.clientY-rect.top};});const moveWindow=e=>{if(!drag||e.pointerId!==drag.id)return;e.preventDefault();const maxX=Math.max(0,innerWidth-w.offsetWidth),maxY=Math.max(0,innerHeight-w.offsetHeight);w.style.left=Math.min(maxX,Math.max(0,e.clientX-drag.x))+'px';w.style.top=Math.min(maxY,Math.max(0,e.clientY-drag.y))+'px'};const stopDrag=e=>{if(drag&&e.pointerId===drag.id)drag=null};document.addEventListener('pointermove',moveWindow);document.addEventListener('pointerup',stopDrag);document.addEventListener('pointercancel',stopDrag);const handle=w.querySelector('.resize-handle');let resize=null;handle.addEventListener('pointerdown',e=>{if(e.button!==0||w.classList.contains('maximized'))return;e.preventDefault();e.stopPropagation();focus(w);const rect=w.getBoundingClientRect();resize={id:e.pointerId,x:e.clientX,y:e.clientY,width:rect.width,height:rect.height,left:rect.left,top:rect.top};w.classList.add('resizing')});const resizeWindow=e=>{if(!resize||e.pointerId!==resize.id)return;e.preventDefault();const maxW=Math.max(260,innerWidth-resize.left-4),maxH=Math.max(200,innerHeight-resize.top-4);const width=Math.min(maxW,Math.max(260,resize.width+e.clientX-resize.x)),height=Math.min(maxH,Math.max(200,resize.height+e.clientY-resize.y));w.style.width=width+'px';w.style.height=height+'px'};document.addEventListener('pointermove',resizeWindow);const stopResize=e=>{if(!resize||e.pointerId!==resize.id)return;resize=null;w.classList.remove('resizing')};document.addEventListener('pointerup',stopResize);document.addEventListener('pointercancel',stopResize);focus(w);dockState();$('#launcher').classList.add('hidden')}
-function openAppInNewTab(id){
- const tab=window.open('about:blank','_blank');
- if(!tab){toast('Allow pop-ups to open this app in a new tab');return}
- // Load the exact OS page currently running. Resolving ../index.html from
- // script.src is fragile when the OS is hosted under a nested GitHub Pages path.
- const appUrl=new URL(window.location.href);
- appUrl.hash='';
- const base=appUrl.href;
- const targetOrigin=appUrl.origin;
- tab.document.open();
- tab.document.write('<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>My OS · App</title></head><body style="margin:0"><iframe id="myos-fullscreen-app" title="My OS app" style="position:fixed;inset:0;width:100%;height:100%;border:0" src="'+base.replace(/&/g,'&amp;').replace(/"/g,'&quot;')+'"></iframe></body></html>');
- tab.document.close();
- const frame=tab.document.getElementById('myos-fullscreen-app');
- frame.addEventListener('load',()=>{
-  try{frame.contentWindow.postMessage({type:'myos-open-app-fullscreen',appId:id},targetOrigin)}
-  catch(err){tab.document.body.textContent='Could not open this app full screen: '+err.message}
- },{once:true});
-}
-window.addEventListener('message',event=>{
- const data=event.data;
- if(event.source!==window.parent||event.origin!==window.location.origin||!data||data.type!=='myos-open-app-fullscreen')return;
- const id=String(data.appId||'');
+function showAppFullscreen(id){
  if(!allApps().some(app=>app[0]===id))return;
  try{
   openApp(id);
@@ -283,7 +262,14 @@ window.addEventListener('message',event=>{
   if(w){w.classList.remove('minimized');w.classList.add('maximized','active');w.style.cssText='position:absolute;inset:0;width:100%;height:100%;max-width:none;max-height:none;border-radius:0'}
   document.title=(w?.querySelector('.window-header b')?.textContent||'My OS App');
  }catch(err){console.error('Full-screen app launch failed',err)}
-});
+}
+function openAppInNewTab(id){
+ const appUrl=new URL(window.location.href);
+ appUrl.hash='';
+ appUrl.searchParams.set('myosApp',id);
+ const tab=window.open(appUrl.href,'_blank');
+ if(!tab)toast('Allow pop-ups to open this app in a new tab');
+}
 function toggleMax(w){if(w.classList.contains('maximized')){w.classList.remove('maximized');w.style.left=w.dataset.prevLeft||'90px';w.style.top=w.dataset.prevTop||'65px';w.style.width='';w.style.height=''}else{w.dataset.prevLeft=w.style.left;w.dataset.prevTop=w.style.top;w.classList.add('maximized')}}function focus(w){document.querySelectorAll('.window').forEach(x=>x.classList.remove('active'));w.classList.remove('minimized');w.classList.add('active');w.style.zIndex=++z;dockState()}
 function dockState(){const bar=$('#dock-apps');bar.innerHTML=[...open.keys()].map(id=>{let a=allApps().find(x=>x[0]===id),w=open.get(id);return a&&w?'<button data-app="'+id+'" class="running '+(w.classList.contains('active')?'focused':'unfocused')+'" title="'+a[2]+'">'+a[1]+'</button>':''}).join('')}
 function toggle(id){['launcher','control-center','notifications'].forEach(x=>{if(x!==id)$('#'+x).classList.add('hidden')});$('#'+id).classList.toggle('hidden')}
@@ -296,4 +282,4 @@ document.addEventListener('click',e=>{if(shortcutWasDragged){e.preventDefault();
 $('#desktop-icons').addEventListener('contextmenu',e=>{const icon=e.target.closest('.desktop-icon[data-app]');if(!icon)return;e.preventDefault();const id=icon.dataset.app,s=shortcuts().filter(x=>x!==id);localStorage.setItem('myos-shortcuts',JSON.stringify(s));renderApps();toast('Desktop shortcut removed')});
 $('#app-search').oninput=e=>{const q=e.target.value.trim().toLowerCase();Array.from(document.querySelectorAll('#launcher-apps .launcher-app-wrap')).forEach(b=>{const tile=b.querySelector('.app-tile');b.hidden=!!q&&!(tile?.textContent||'').toLowerCase().includes(q)});};$('#brightness').oninput=e=>$('#desktop').style.filter='brightness('+e.target.value/100+')';$('#volume').oninput=e=>{};
 $('#clock').onclick=()=>openApp('calendar');document.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key===' ')toggle('launcher');if(e.key==='Escape')['launcher','control-center','notifications'].forEach(x=>$('#'+x).classList.add('hidden'))});
-renderApps();apply();loadWallpaper();setInterval(()=>$('#clock').textContent=new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}),1000);
+renderApps();const fullscreenApp=new URLSearchParams(window.location.search).get('myosApp');if(fullscreenApp)showAppFullscreen(fullscreenApp);apply();loadWallpaper();setInterval(()=>$('#clock').textContent=new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}),1000);
