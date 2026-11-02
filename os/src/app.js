@@ -264,11 +264,31 @@ function showAppFullscreen(id){
  }catch(err){console.error('Full-screen app launch failed',err)}
 }
 function openAppInNewTab(id){
- const appUrl=new URL(window.location.href);
- appUrl.hash='';
- appUrl.searchParams.set('myosApp',id);
- const tab=window.open(appUrl.href,'_blank');
- if(!tab)toast('Allow pop-ups to open this app in a new tab');
+ const app=allApps().find(item=>item[0]===id);
+ if(!app){toast('This app could not be found');return}
+ // Open a real about:blank tab synchronously so popup blockers allow it.
+ const tab=window.open('about:blank','_blank');
+ if(!tab){toast('Allow pop-ups to open this app in a new tab');return}
+ try{
+  const appUrl=new URL(window.location.href);
+  appUrl.hash='';
+  appUrl.searchParams.set('myosApp',id);
+  const doc=tab.document;
+  doc.title=app[2]+' · My OS';
+  doc.documentElement.style.cssText='width:100%;height:100%;margin:0;background:#090b12;overflow:hidden';
+  doc.body.style.cssText='width:100%;height:100%;margin:0;background:#090b12;overflow:hidden';
+  const frame=doc.createElement('iframe');
+  frame.title=app[2];
+  frame.src=appUrl.href;
+  frame.allow='fullscreen; clipboard-read; clipboard-write';
+  frame.referrerPolicy='same-origin';
+  frame.style.cssText='display:block;width:100%;height:100%;border:0;background:#090b12';
+  doc.body.appendChild(frame);
+ }catch(err){
+  console.error('Could not launch app in blank tab:',err);
+  try{tab.close()}catch{}
+  toast('Could not open this app in a new tab');
+ }
 }
 function toggleMax(w){if(w.classList.contains('maximized')){w.classList.remove('maximized');w.style.left=w.dataset.prevLeft||'90px';w.style.top=w.dataset.prevTop||'65px';w.style.width='';w.style.height=''}else{w.dataset.prevLeft=w.style.left;w.dataset.prevTop=w.style.top;w.classList.add('maximized')}}function focus(w){document.querySelectorAll('.window').forEach(x=>x.classList.remove('active'));w.classList.remove('minimized');w.classList.add('active');w.style.zIndex=++z;dockState()}
 function dockState(){const bar=$('#dock-apps');bar.innerHTML=[...open.keys()].map(id=>{let a=allApps().find(x=>x[0]===id),w=open.get(id);return a&&w?'<button data-app="'+id+'" class="running '+(w.classList.contains('active')?'focused':'unfocused')+'" title="'+a[2]+'">'+a[1]+'</button>':''}).join('')}
