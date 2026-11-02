@@ -255,21 +255,27 @@ function showAppFullscreen(id){
  const app=allApps().find(item=>item[0]===id);
  if(!app)return;
  try{
+  // Mount with the existing app code, then promote its actual content node to the page.
   openApp(id);
+  const w=document.querySelector('#windows .window[data-app="'+CSS.escape(id)+'"]');
+  const root=w&&w.querySelector('.window-content');
+  if(!w||!root)throw new Error('The app content could not be mounted');
+  root.classList.add('myos-standalone-app-root');
+  root.remove();
+  document.body.insertBefore(root,document.body.firstChild);
+  // Remove the OS desktop and the window chrome completely. The app content is now
+  // the document's top-level page content, not a window inside the page.
+  const desktop=document.getElementById('desktop');
+  if(desktop)desktop.remove();
+  w.remove();
   const style=document.createElement('style');
   style.id='myos-standalone-app-style';
   style.textContent=`
-   html,body,#desktop{width:100%!important;height:100%!important;min-height:100%!important;margin:0!important;padding:0!important;overflow:hidden!important}
-   #desktop{position:fixed!important;inset:0!important;background:transparent!important}
-   #wallpaper-image,.wallpaper-shade,#desktop-icons,#dock,#launcher,#control-center,#notifications,#context-menu,#toast,#selection-box{display:none!important}
-   .windows{position:fixed!important;inset:0!important;width:100%!important;height:100%!important;overflow:hidden!important;background:transparent!important;pointer-events:none!important}
-   .window{position:fixed!important;inset:0!important;width:100vw!important;height:100dvh!important;min-width:0!important;min-height:0!important;max-width:none!important;max-height:none!important;margin:0!important;padding:0!important;border:0!important;border-radius:0!important;box-shadow:none!important;transform:none!important;background:transparent!important;overflow:hidden!important;pointer-events:auto!important}
-   .window-header,.resize-handle{display:none!important}
-   .window-content{position:absolute!important;inset:0!important;width:100%!important;height:100%!important;min-width:0!important;min-height:0!important;max-width:none!important;max-height:none!important;margin:0!important;padding:0!important;border:0!important;border-radius:0!important;overflow:auto!important;background:transparent!important}
+   html,body{width:100%!important;height:100%!important;min-height:100%!important;margin:0!important;padding:0!important;overflow:hidden!important}
+   body{position:relative!important;background:transparent!important}
+   .myos-standalone-app-root{display:block!important;position:fixed!important;inset:0!important;width:100vw!important;height:100vh!important;height:100dvh!important;min-width:0!important;min-height:0!important;max-width:none!important;max-height:none!important;margin:0!important;padding:0!important;border:0!important;border-radius:0!important;box-shadow:none!important;transform:none!important;overflow:auto!important;background:transparent!important}
   `;
   document.head.appendChild(style);
-  const w=document.querySelector('#windows .window[data-app="'+CSS.escape(id)+'"]');
-  if(w){w.classList.remove('minimized');w.classList.add('maximized','active');w.style.cssText='position:fixed;inset:0;width:100vw;height:100dvh;min-width:0;min-height:0;max-width:none;max-height:none;margin:0;padding:0;border:0;border-radius:0;box-shadow:none;transform:none;overflow:hidden'}
   document.title=app[2];
   document.documentElement.dataset.myosStandaloneApp=id;
  }catch(err){console.error('Standalone app launch failed',err)}
