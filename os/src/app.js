@@ -128,7 +128,7 @@ function mountActivityTracker(root){
  root.querySelector('#at-refresh').onclick=draw;};draw();
 }
 
-function legacy(id,root){if(id==='activity'){recordActivity('app','activity');mountActivityTracker(root);return;}if(id==='photoeditor'){
+function legacy(id,root){if(id==='activity'){mountActivityTracker(root);return;}if(id==='photoeditor'){
   root.style.position='relative';root.style.height='100%';root.style.minHeight='0';root.style.overflow='hidden';
   const frame=document.createElement('iframe');frame.title='PhotoEditor';frame.allow='clipboard-read; clipboard-write';
   frame.style.cssText='position:absolute;inset:0;width:100%;height:100%;border:0;background:#1e1e1e';
