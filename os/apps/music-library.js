@@ -1,0 +1,40 @@
+(function(){
+'use strict';
+window.mountMusicLibrary=function(root){
+ const q=s=>root.querySelector(s), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+ const results=q('#ml-results'),audio=q('#audio-player');let token=0,tracks=[],local=[];
+ const allowed=u=>/publicdomain\/(zero|mark)|creativecommons\.org\/licenses\/(by|by-sa)\/(1\.0|2\.0|3\.0|4\.0)/i.test(String(u||''));
+ const render=list=>{tracks=list;if(!list.length){results.innerHTML='<div class="ml-empty">No matching tracks found. Try another search.</div>';return}
+ results.innerHTML=list.map((t,i)=>'<article class="ml-track"><button class="ml-play" data-play="'+i+'" aria-label="Play">▶</button><div class="ml-track-info"><b>'+esc(t.title)+'</b><small>'+esc(t.creator)+' · '+esc(t.licenseLabel)+'</small></div><a class="ml-download" href="'+esc(t.download)+'" download target="_blank" rel="noopener">↓ Download</a><a class="ml-source" href="'+esc(t.page)+'" target="_blank" rel="noopener">↗</a></article>').join('')};
+ async function search(term,genre){
+  const n=++token,word=String(term||genre||'').replace(/[(){}\[\]^"~*?:\\/]/g,' ').trim();
+  q('#ml-heading').textContent=word?'Results for “'+word+'”':'Discover music';q('#ml-status').textContent='Searching free licensed tracks…';results.innerHTML='<div class="ml-empty">Loading music…</div>';
+  const license='(licenseurl:http*publicdomain*zero* OR licenseurl:http*by/4.0* OR licenseurl:http*by-sa/4.0*)';
+  const query='mediatype:audio AND '+license+(word?' AND ('+word.split(/\s+/).map(x=>'"'+x+'"').join(' AND ')+')':'');
+  const url='https://archive.org/advancedsearch.php?q='+encodeURIComponent(query)+'&fl[]=identifier&fl[]=title&fl[]=creator&fl[]=licenseurl&rows=20&page=1&output=json';
+  try{
+   const res=await fetch(url);if(!res.ok)throw Error('Search failed');const data=await res.json();if(n!==token)return;
+   const docs=data.response?.docs||[];
+   const found=await Promise.all(docs.map(async d=>{try{
+    const mr=await fetch('https://archive.org/metadata/'+encodeURIComponent(d.identifier));if(!mr.ok)return null;
+    const meta=await mr.json(),lic=meta.metadata?.licenseurl||d.licenseurl||'';if(!allowed(lic))return null;
+    const fs=(meta.files||[]).filter(f=>!f.private&&!f.source&&/\.(mp3|ogg|oga|flac|wav)$/i.test(f.name||'')&&!/sample|spectrogram|thumbnail/i.test(f.name||''));
+    fs.sort((a,b)=>({mp3:0,ogg:1,oga:1,flac:2,wav:3}[(a.name.split('.').pop()||'').toLowerCase()]??9)-({mp3:0,ogg:1,oga:1,flac:2,wav:3}[(b.name.split('.').pop()||'').toLowerCase()]??9));
+    if(!fs.length)return null;
+    const label=/publicdomain/i.test(lic)?'Public domain':/by-sa/i.test(lic)?'CC BY-SA':'CC BY';
+    return {title:meta.metadata?.title||d.title||'Untitled',creator:Array.isArray(meta.metadata?.creator)?meta.metadata.creator.join(', '):(meta.metadata?.creator||d.creator||'Unknown artist'),licenseLabel:label,download:'https://archive.org/download/'+encodeURIComponent(d.identifier)+'/'+encodeURIComponent(fs[0].name),page:'https://archive.org/details/'+encodeURIComponent(d.identifier)};
+   }catch{return null}}));
+   if(n!==token)return;const valid=found.filter(Boolean);render(valid);q('#ml-status').textContent=valid.length+' tracks available · Free licenses';
+  }catch(e){if(n!==token)return;results.innerHTML='<div class="ml-empty">The catalog could not load. Check your connection and try again.</div>';q('#ml-status').textContent='Catalog unavailable';console.warn(e)}
+ }
+ q('#ml-search-btn').onclick=()=>search(q('#ml-query').value.trim(),'');
+ q('#ml-query').onkeydown=e=>{if(e.key==='Enter')search(q('#ml-query').value.trim(),'')};
+ root.querySelectorAll('[data-genre]').forEach(b=>b.onclick=()=>{q('#ml-query').value='';search('',b.dataset.genre)});
+ results.addEventListener('click',e=>{const b=e.target.closest('[data-play]');if(!b)return;const t=tracks[+b.dataset.play];if(!t)return;audio.src=t.download;audio.play().catch(()=>{});q('#ml-now-title').textContent=t.title;q('#ml-now-artist').textContent=t.creator});
+ q('#audio-picker').onchange=e=>{for(const f of e.target.files)local.push({name:f.name,url:URL.createObjectURL(f)});q('#ml-local-list').innerHTML=local.map((t,i)=>'<button data-local="'+i+'">▶ '+esc(t.name)+'</button>').join('')||'<span>No personal tracks yet.</span>'};
+ q('#ml-local-list').addEventListener('click',e=>{const b=e.target.closest('[data-local]');if(!b)return;const t=local[+b.dataset.local];audio.src=t.url;audio.play().catch(()=>{});q('#ml-now-title').textContent=t.name;q('#ml-now-artist').textContent='Your music'});
+ const style=document.createElement('style');
+ style.textContent='#music-library{color:var(--text);display:grid;gap:15px;padding-bottom:84px}.ml-hero{display:flex;justify-content:space-between;align-items:center;padding:21px;border-radius:18px;background:linear-gradient(125deg,color-mix(in srgb,var(--accent) 28%,transparent),color-mix(in srgb,var(--surface) 70%,transparent));border:1px solid color-mix(in srgb,var(--text) 12%,transparent)}.ml-kicker{font-size:10px;letter-spacing:2px;opacity:.65}.ml-hero h3{font-size:23px;margin:7px 0}.ml-hero p,.ml-foot{font-size:12px;opacity:.68;margin:0;line-height:1.5}.ml-note{font-size:44px;opacity:.55}.ml-search{display:flex;gap:8px}.ml-search input{flex:1;min-width:0;padding:12px 14px;border-radius:12px;border:1px solid color-mix(in srgb,var(--text) 18%,transparent);background:color-mix(in srgb,var(--surface) 80%,transparent);color:inherit}.ml-search button,.ml-genres button,.ml-import{border:1px solid color-mix(in srgb,var(--text) 18%,transparent);border-radius:11px;padding:9px 13px;background:color-mix(in srgb,var(--surface) 65%,transparent);color:inherit;cursor:pointer}.ml-genres{display:flex;flex-wrap:wrap;gap:7px}.ml-genres button{font-size:12px}.ml-section-head{display:flex;justify-content:space-between;align-items:center;gap:12px}.ml-section-head small,.ml-track-info small,.ml-now small{display:block;font-size:11px;opacity:.65;margin-top:4px}.ml-import{font-size:12px;white-space:nowrap}.ml-results{display:grid;gap:8px}.ml-track{display:flex;align-items:center;gap:12px;padding:11px;border-radius:13px;background:color-mix(in srgb,var(--surface) 72%,transparent);border:1px solid color-mix(in srgb,var(--text) 10%,transparent);min-width:0}.ml-play{width:36px;height:36px;flex:none;border:0;border-radius:50%;background:var(--accent);color:white;cursor:pointer}.ml-track-info{min-width:0;flex:1}.ml-track-info b{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}.ml-download,.ml-source{color:inherit;text-decoration:none;font-size:12px;padding:7px 9px;border-radius:8px;background:color-mix(in srgb,var(--text) 8%,transparent);white-space:nowrap}.ml-empty{padding:24px;text-align:center;opacity:.65;border:1px dashed color-mix(in srgb,var(--text) 20%,transparent);border-radius:14px;font-size:13px}.ml-local{display:grid;gap:8px;font-size:13px}.ml-local-list{display:flex;flex-wrap:wrap;gap:8px}.ml-local-list button{background:transparent;color:inherit;border:1px solid color-mix(in srgb,var(--text) 16%,transparent);padding:7px 10px;border-radius:9px}.ml-player{position:sticky;bottom:0;z-index:4;display:flex;align-items:center;gap:16px;padding:12px;border-radius:14px;background:color-mix(in srgb,var(--surface) 94%,transparent);backdrop-filter:blur(18px);border:1px solid color-mix(in srgb,var(--text) 16%,transparent)}.ml-now{min-width:0;flex:1}.ml-now b{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}.ml-player audio{width:min(360px,48%);height:36px}.ml-foot{font-size:10px}@media(max-width:560px){.ml-hero{padding:16px}.ml-hero h3{font-size:19px}.ml-section-head{align-items:flex-start;flex-direction:column}.ml-track{gap:7px;padding:8px}.ml-download{font-size:10px;padding:7px}.ml-player{align-items:stretch;flex-direction:column;gap:8px}.ml-player audio{width:100%}}';
+ root.appendChild(style);search('','');
+};
+})();
