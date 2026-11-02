@@ -240,6 +240,8 @@ function legacy(id,root){if(id==='activity'){mountActivityTracker(root);return;}
    State.playbackSpeed=Number(ecPrefs.speed)||1;State.isLooping=!!ecPrefs.loop;State.autoKey=!!ecPrefs.autoKey;State.defaultEase=ecPrefs.ease||'linear';State.expandedKeyframes=!!ecPrefs.keyframes;
    if(typeof setTimelineZoom==='function')setTimelineZoom(Number(ecPrefs.zoom)||70);
    if(typeof renderTimeline==='function')renderTimeline();
+   const speedEl=document.getElementById('playbackSpeed'),loopEl=document.getElementById('loopButton'),autoEl=document.getElementById('autoKeyButton'),easeEl=document.getElementById('keyframeEase');
+   if(speedEl)speedEl.value=String(State.playbackSpeed);if(loopEl)loopEl.style.color=State.isLooping?'#c4b5ff':'#8b93a7';if(autoEl){autoEl.classList.toggle('is-on',!!State.autoKey);autoEl.classList.toggle('auto-key-pulse',!!State.autoKey)}if(easeEl)easeEl.value=State.defaultEase;
   }
   function ecOpenSettings(){
    let panel=document.getElementById('ecEditorSettings');if(panel){panel.hidden=!panel.hidden;return}
