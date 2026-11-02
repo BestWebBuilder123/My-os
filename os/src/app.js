@@ -215,14 +215,22 @@ function legacy(id,root){if(id==='activity'){mountActivityTracker(root);return;}
    handheld:{label:'Handheld Shake',min:0,max:100,step:1,def:0,unit:'%'},
    impact:{label:'Impact Shake',min:0,max:100,step:1,def:0,unit:'%'}
   });
-  const fxLibrary=document.getElementById('fxLibrary');
-  if(fxLibrary){
-   let group=[...fxLibrary.querySelectorAll('.fx-group')].find(g=>/motion|shake/i.test(g.querySelector('.fx-group-title')?.textContent||''));
-   if(!group){group=document.createElement('div');group.className='fx-group';const title=document.createElement('div');title.className='fx-group-title';title.textContent='Motion & Shake';group.appendChild(title);fxLibrary.appendChild(group)}
-   [['oscillate','Oscillate'],['autoshake','Auto Shake'],['handheld','Handheld Shake'],['impact','Impact Shake']].forEach(([type,label])=>{
-    if(fxLibrary.querySelector('[data-fx="'+type+'"]'))return;
-    const item=document.createElement('div');item.className='fx-item';item.dataset.fx=type;item.innerHTML=label+' <span>＋</span>';item.addEventListener('click',()=>addEffectToSelected(type));group.appendChild(item)
-   });
+  // Register the shake effects in the editor's own FX registry, then rebuild its native library.
+  // Appending DOM nodes alone is unreliable because buildFxLibrary() replaces the entire library.
+  if(typeof FX_GROUPS!=='undefined'&&typeof buildFxLibrary==='function'&&typeof FX!=='undefined'){
+   FX_GROUPS['Motion & Shake']=['oscillate','autoshake','handheld','impact'];
+   buildFxLibrary();
+  }else{
+   const fxLibrary=document.getElementById('fxLibrary');
+   if(fxLibrary){
+    const group=document.createElement('div');group.className='fx-group';
+    const title=document.createElement('div');title.className='fx-group-title';title.textContent='Motion & Shake';group.appendChild(title);
+    [['oscillate','Oscillate'],['autoshake','Auto Shake'],['handheld','Handheld Shake'],['impact','Impact Shake']].forEach(([type,label])=>{
+     const item=document.createElement('div');item.className='fx-item';item.dataset.fx=type;item.innerHTML=label+' <span>＋</span>';
+     item.addEventListener('click',()=>addEffectToSelected(type));group.appendChild(item);
+    });
+    fxLibrary.appendChild(group);
+   }
   }
   const nav=document.querySelector('.topbar .menu');if(nav&&!document.getElementById('ecAutoCaptions')){const b=document.createElement('button');b.id='ecAutoCaptions';b.textContent='Auto captions';b.onclick=ecOpenCaptions;nav.appendChild(b)}
   function ecOpenCaptions(){let box=document.getElementById('ecCaptionPanel');if(box){box.remove();return}box=document.createElement('div');box.id='ecCaptionPanel';box.style.cssText='position:fixed;z-index:99999;right:18px;top:62px;width:min(390px,calc(100vw - 36px));padding:18px;border:1px solid #45495b;border-radius:16px;background:#171923;color:#f4f5fb;box-shadow:0 18px 60px #0009;font:13px system-ui';box.innerHTML='<b>Auto captions</b><button id="ecCapClose" style="float:right">×</button><p style="color:#aeb4c7;line-height:1.5">Live speech-to-text. Play video audio through speakers while the microphone listens. Chrome speech recognition listens to the microphone; it cannot directly read the imported video audio track.</p><select id="ecCapLang" style="width:100%;padding:9px"><option value="en-US">English (US)</option><option value="en-GB">English (UK)</option><option value="es-ES">Spanish</option><option value="fr-FR">French</option><option value="pt-BR">Portuguese</option></select><p id="ecCapStatus">Ready to listen.</p><div id="ecCapText" style="max-height:120px;overflow:auto;padding:9px;background:#10121a">Recognized speech appears here.</div><div style="display:flex;gap:8px;margin-top:10px"><button id="ecCapStart">Start listening</button><button id="ecCapStop" disabled>Stop</button><button id="ecCapAdd" disabled>Add captions</button></div>';document.body.appendChild(box);let rec=null,finals=[],interim='';const status=box.querySelector('#ecCapStatus'),txt=box.querySelector('#ecCapText'),start=box.querySelector('#ecCapStart'),stop=box.querySelector('#ecCapStop'),add=box.querySelector('#ecCapAdd');box.querySelector('#ecCapClose').onclick=()=>{try{rec?.stop()}catch{}box.remove()};const SR=window.SpeechRecognition||window.webkitSpeechRecognition;if(!SR){status.textContent='Speech recognition is not supported in this browser.';start.disabled=true;return}rec=new SR();rec.continuous=true;rec.interimResults=true;rec.onstart=()=>{status.textContent='Listening… play the video audio now.';start.disabled=true;stop.disabled=false};rec.onresult=e=>{interim='';for(let i=e.resultIndex;i<e.results.length;i++){const phrase=e.results[i][0].transcript.trim();if(e.results[i].isFinal&&phrase)finals.push({text:phrase,time:State.currentTime});else interim+=phrase+' '}txt.textContent=finals.map(x=>x.text).join(' ')+(interim?' '+interim:'');add.disabled=!finals.length};rec.onerror=e=>{status.textContent='Recognition error: '+e.error;start.disabled=false;stop.disabled=true};rec.onend=()=>{start.disabled=false;stop.disabled=true;if(finals.length)status.textContent=finals.length+' caption segment(s) ready.'};start.onclick=()=>{try{rec.lang=box.querySelector('#ecCapLang').value;rec.start()}catch(e){status.textContent=e.message}};stop.onclick=()=>rec.stop();add.onclick=()=>{if(!finals.length)return;pushHistory();const total=Math.max(.1,State.project.duration);finals.forEach((entry,i)=>{const t=clamp(entry.time,0,total-.1),layer=makeLayer('text',{name:'Caption '+(i+1),text:entry.text,fontSize:54,fontFamily:'Arial',fontWeight:700,align:'center',color:'#ffffff',stroke:'#000000',strokeWidth:3,width:1600,height:110,x:State.project.width/2,y:State.project.height*.86,startTime:t,duration:Math.max(.6,Math.min(3,total-t))});State.layers.push(layer)});renderTimeline();renderInspector();drawFrame();status.textContent='Added '+finals.length+' caption layers.';add.disabled=true}}
