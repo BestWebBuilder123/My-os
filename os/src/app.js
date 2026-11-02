@@ -254,20 +254,24 @@ function openApp(id){if(open.has(id)){let old=open.get(id);old.classList.remove(
 function openAppInNewTab(id){
  const tab=window.open('about:blank','_blank');
  if(!tab){toast('Allow pop-ups to open this app in a new tab');return}
- const script=[...document.scripts].find(s=>/src\/app\.js(?:\?|$)/.test(s.src));
- const base=script?new URL('../index.html',script.src).href:new URL('index.html',document.baseURI).href;
+ // Load the exact OS page currently running. Resolving ../index.html from
+ // script.src is fragile when the OS is hosted under a nested GitHub Pages path.
+ const appUrl=new URL(window.location.href);
+ appUrl.hash='';
+ const base=appUrl.href;
+ const targetOrigin=appUrl.origin;
  tab.document.open();
  tab.document.write('<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>My OS · App</title></head><body style="margin:0"><iframe id="myos-fullscreen-app" title="My OS app" style="position:fixed;inset:0;width:100%;height:100%;border:0" src="'+base.replace(/&/g,'&amp;').replace(/"/g,'&quot;')+'"></iframe></body></html>');
  tab.document.close();
  const frame=tab.document.getElementById('myos-fullscreen-app');
  frame.addEventListener('load',()=>{
-  try{frame.contentWindow.postMessage({type:'myos-open-app-fullscreen',appId:id},'*')}
+  try{frame.contentWindow.postMessage({type:'myos-open-app-fullscreen',appId:id},targetOrigin)}
   catch(err){tab.document.body.textContent='Could not open this app full screen: '+err.message}
- });
+ },{once:true});
 }
 window.addEventListener('message',event=>{
  const data=event.data;
- if(event.source!==window.parent||!data||data.type!=='myos-open-app-fullscreen')return;
+ if(event.source!==window.parent||event.origin!==window.location.origin||!data||data.type!=='myos-open-app-fullscreen')return;
  const id=String(data.appId||'');
  if(!allApps().some(app=>app[0]===id))return;
  try{
@@ -278,7 +282,7 @@ window.addEventListener('message',event=>{
   const w=document.querySelector('#windows .window[data-app="'+CSS.escape(id)+'"]');
   if(w){w.classList.remove('minimized');w.classList.add('maximized','active');w.style.cssText='position:absolute;inset:0;width:100%;height:100%;max-width:none;max-height:none;border-radius:0'}
   document.title=(w?.querySelector('.window-header b')?.textContent||'My OS App');
- }catch(err){document.body.textContent='Could not open this app full screen: '+err.message}
+ }catch(err){console.error('Full-screen app launch failed',err)}
 });
 function toggleMax(w){if(w.classList.contains('maximized')){w.classList.remove('maximized');w.style.left=w.dataset.prevLeft||'90px';w.style.top=w.dataset.prevTop||'65px';w.style.width='';w.style.height=''}else{w.dataset.prevLeft=w.style.left;w.dataset.prevTop=w.style.top;w.classList.add('maximized')}}function focus(w){document.querySelectorAll('.window').forEach(x=>x.classList.remove('active'));w.classList.remove('minimized');w.classList.add('active');w.style.zIndex=++z;dockState()}
 function dockState(){const bar=$('#dock-apps');bar.innerHTML=[...open.keys()].map(id=>{let a=allApps().find(x=>x[0]===id),w=open.get(id);return a&&w?'<button data-app="'+id+'" class="running '+(w.classList.contains('active')?'focused':'unfocused')+'" title="'+a[2]+'">'+a[1]+'</button>':''}).join('')}
