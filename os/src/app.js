@@ -129,12 +129,17 @@ function mountActivityTracker(root){
 }
 
 function legacy(id,root){if(id==='activity'){mountActivityTracker(root);return;}if(id==='ixxlsave'){
- root.style.position='relative';root.style.height='100%';root.style.minHeight='0';root.style.overflow='hidden';
- const frame=document.createElement('iframe');frame.title='IxxlSave · YouTube & TikTok Downloader';frame.allow='clipboard-read; clipboard-write';
- frame.style.cssText='position:absolute;inset:0;width:100%;height:100%;border:0;background:#09090b';
- root.replaceChildren(frame);
- frame.src=new URL('apps/ixxlsave.html',document.baseURI).href;
- return;
+  root.style.position='relative';root.style.height='100%';root.style.minHeight='0';root.style.overflow='hidden';
+  const frame=document.createElement('iframe');frame.title='IxxlSave · YouTube & TikTok Downloader';frame.allow='clipboard-read; clipboard-write';
+  frame.style.cssText='position:absolute;inset:0;width:100%;height:100%;border:0;background:#09090b';
+  root.replaceChildren(frame);
+  const loading='<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#09090b;color:#f4f4f5;font:14px system-ui}main{max-width:480px;padding:28px;text-align:center}p{color:#a1a1aa;line-height:1.5}.spin{width:26px;height:26px;border:3px solid #3f3f46;border-top-color:#a1a1aa;border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 18px}@keyframes spin{to{transform:rotate(360deg)}}</style></head><body><main><div class="spin"></div><h2>Loading IxxlSave</h2><p>Starting your downloader…</p></main></body></html>';
+  frame.srcdoc=loading;
+  fetch(new URL('apps/ixxlsave.html',document.baseURI).href,{cache:'force-cache'})
+   .then(response=>{if(!response.ok)throw new Error('IxxlSave file failed to load (HTTP '+response.status+').');return response.text()})
+   .then(html=>{if(!/<html[\\s>]/i.test(html))throw new Error('The IxxlSave HTML file is incomplete.');const baseTag='<base href="'+new URL('apps/',document.baseURI).href+'">';html=/<head[^>]*>/i.test(html)?html.replace(/<head[^>]*>/i,head=>head+baseTag):baseTag+html;frame.srcdoc=html})
+   .catch(err=>{const msg=String(err&&err.message||err).replace(/[&<>"]/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch]));frame.srcdoc='<!doctype html><html><head><meta charset="utf-8"><style>body{margin:0;padding:30px;background:#09090b;color:#eee;font:14px system-ui}pre{white-space:pre-wrap;color:#ffb4b4;background:#18181b;padding:14px;border-radius:8px}</style></head><body><h2>IxxlSave could not start</h2><p>The app could not be loaded from the OS app files.</p><pre>'+msg+'</pre></body></html>'});
+  return;
 }if(id==='photoeditor'){
   root.style.position='relative';root.style.height='100%';root.style.minHeight='0';root.style.overflow='hidden';
   const frame=document.createElement('iframe');frame.title='PhotoEditor';frame.allow='clipboard-read; clipboard-write';
