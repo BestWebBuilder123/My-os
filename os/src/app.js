@@ -208,40 +208,27 @@ function legacy(id,root){if(id==='activity'){mountActivityTracker(root);return;}
    const l=activeLayer(),body=document.getElementById('inspectorBody');
    if(!l||!body||State.inspectorTab!=='effects')return;
    const labels={oscillate:'Oscillate',autoshake:'Auto Shake',handheld:'Handheld Shake',impact:'Impact Shake',glow:'Glow',shadow:'Shadow',tint:'Tint',vignette:'Vignette',glitch:'Glitch',wave:'Wave',echo:'Echo',ray:'Ray'};
-   // HARD REMOVE the original Effect Stack section. The previous cleanup skipped text-only
-   // nodes (children.length===0), which is why the native section survived.
+   // Keep the custom controls isolated from the bundled native Effect Stack.
+   // Remove only the exact native section containing its own heading + explanatory copy + library action.
    const cleanText=v=>(v||'').replace(/\\s+/g,' ').trim().toLowerCase();
-   const leaves=Array.from(body.querySelectorAll('*')).filter(n=>n.children.length===0);
-   const heading=leaves.find(n=>cleanText(n.textContent)==='effect stack');
-   const description=leaves.find(n=>cleanText(n.textContent).includes('effects are processed from top to bottom'));
-   const browse=leaves.find(n=>cleanText(n.textContent)==='browse library'||cleanText(n.textContent)==='+ browse library');
-   if(heading&&description&&browse){
-    let section=heading.parentElement;
-    while(section&&section!==body&&!(section.contains(description)&&section.contains(browse)))section=section.parentElement;
-    if(section&&section!==body)section.remove();
-   }else if(heading&&description){
-    // Fallback for layouts where Browse Library is rendered in a sibling toolbar.
-    let section=heading.parentElement;
-    while(section&&section!==body&&!section.contains(description))section=section.parentElement;
-    if(section&&section!==body)section.remove();
+   const leaves=Array.from(body.querySelectorAll('*')).filter(n=>n.children.length===0&&!n.closest('.ec-fx-controls-panel'));
+   const nativeHeading=leaves.find(n=>cleanText(n.textContent)==='effect stack');
+   const nativeDescription=leaves.find(n=>cleanText(n.textContent).includes('effects are processed from top to bottom'));
+   const nativeBrowse=leaves.find(n=>cleanText(n.textContent).includes('browse library'));
+   if(nativeHeading&&nativeDescription&&nativeBrowse){
+    let nativeSection=nativeHeading;
+    while(nativeSection.parentElement&&nativeSection.parentElement!==body&&
+      !(nativeSection.contains(nativeDescription)&&nativeSection.contains(nativeBrowse)))nativeSection=nativeSection.parentElement;
+    if(nativeSection!==body&&nativeSection.contains(nativeDescription)&&nativeSection.contains(nativeBrowse)&&!nativeSection.querySelector('.ec-fx-controls-panel'))nativeSection.remove();
    }
-   // Remove native effect rows left outside that section, using their visible title and controls.
-   // Match leaf text first, then remove the smallest ancestor that owns the native slider + action buttons.
-   const nativeNames=new Set((l.effects||[]).map(fx=>cleanText(String(fx.name||fx.label||fx.type||'').replace(/[_-]+/g,' '))));
-   const nativeCards=new Set();
-   for(const leaf of Array.from(body.querySelectorAll('*')).filter(n=>n.children.length===0)){
-    if(leaf.closest('.ec-fx-stack'))continue;
-    const title=cleanText(leaf.textContent);
-    if(!nativeNames.has(title)&&!Array.from(nativeNames).some(name=>title===name+' strength #1'||title.startsWith(name+' #')))continue;
-    let card=leaf.parentElement;
-    while(card&&card!==body){
-     if(card.querySelector('input[type="range"]')&&card.querySelectorAll('button').length>=2){nativeCards.add(card);break}
-     card=card.parentElement;
-    }
+   // If the native renderer splits heading and card list, remove only its heading/description block.
+   if(nativeHeading&&nativeDescription&&nativeHeading.isConnected&&nativeDescription.isConnected){
+    let intro=nativeHeading.parentElement;
+    while(intro&&intro!==body&&!intro.contains(nativeDescription))intro=intro.parentElement;
+    if(intro&&intro!==body&&!intro.querySelector('.ec-fx-controls-panel'))intro.remove();
    }
-   nativeCards.forEach(card=>{if(!card.closest('.ec-fx-stack'))card.remove()});
-   const old=body.querySelector('.ec-fx-stack');if(old)old.remove();
-   const panel=document.createElement('div');panel.className='ec-fx-stack';panel.dataset.layerId=String(l.id);
+   const old=body.querySelector('.ec-fx-controls-panel');if(old)old.remove();
+   const panel=document.createElement('div');panel.className='ec-fx-controls-panel';panel.dataset.layerId=String(l.id);
    const heading=document.createElement('div');heading.className='ec-fx-stack-heading';heading.textContent='EFFECT CONTROLS';panel.append(heading);
    const effects=l.effects||[];
    if(!effects.length){const empty=document.createElement('div');empty.className='ec-fx-empty';empty.textContent='Add an effect to see its controls.';panel.append(empty)}
