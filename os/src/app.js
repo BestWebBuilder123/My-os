@@ -204,9 +204,41 @@ function legacy(id,root){if(id==='activity'){mountActivityTracker(root);return;}
   function ecFxValue(layer,fx,p,def){return evalProp(layer,ecFxKey(fx,p),fx[p]===undefined?def:fx[p])}
   function ecFxSet(id,p,value){const l=activeLayer(),fx=l&&l.effects.find(x=>x.id===id);if(!fx)return;const key=ecFxKey(fx,p),arr=l.keyframes&&l.keyframes[key]||[];if(State.autoKey||arr.length){l.keyframes=l.keyframes||{};l.keyframes[key]=arr;let k=arr.find(x=>Math.abs(x.time-State.currentTime)<.0005);if(!k){k={id:uid(),time:State.currentTime,value:value,ease:State.defaultEase};arr.push(k)}else k.value=value}else fx[p]=value;if(p==='color'&&fx.type==='glow')l.glowColor=value;drawFrame()}
   function ecFxToggle(id,p,def){const l=activeLayer(),fx=l&&l.effects.find(x=>x.id===id);if(!fx)return;const key=ecFxKey(fx,p);pushHistory();l.keyframes=l.keyframes||{};const arr=l.keyframes[key]=l.keyframes[key]||[],i=arr.findIndex(k=>Math.abs(k.time-State.currentTime)<.0005);if(i>=0)arr.splice(i,1);else arr.push({id:uid(),time:State.currentTime,value:ecFxValue(l,fx,p,def),ease:State.defaultEase});if(!arr.length)delete l.keyframes[key];renderInspector();renderTimeline();drawFrame()}
-  function ecAddFxSettings(){const l=activeLayer(),body=document.getElementById('inspectorBody');if(!l||!body||State.inspectorTab!=='effects')return;body.querySelectorAll('.fx-control').forEach(card=>{if(card.querySelector('.ec-fx-settings'))return;const action=card.querySelector('[onclick*="toggleEffectEnabled"]')?.getAttribute('onclick')||'',m=action.match(/toggleEffectEnabled\('([^']+)'\)/);if(!m)return;const fx=l.effects.find(x=>x.id===m[1]);if(!fx)return;const defs=fxDefs[fx.type]||[];if(!defs.length)return;const grid=document.createElement('div');grid.className='ec-fx-settings';defs.forEach(([p,label,type,def,min,max,step])=>{const val=ecFxValue(l,fx,p,def),key=ecFxKey(fx,p),animated=(l.keyframes&&l.keyframes[key]||[]).length>0,field=document.createElement('div');field.className='ec-fx-field';const lab=document.createElement('label');lab.textContent=label;const row=document.createElement('div');row.className='ec-fx-control';let input;if(type==='color'){input=document.createElement('input');input.type='color';input.value=val||def}else if(type==='select'){input=document.createElement('select');min.forEach(v=>{const o=document.createElement('option');o.value=v;o.textContent=v;o.selected=v===val;input.appendChild(o)})}else{input=document.createElement('input');input.type='number';input.min=min;input.max=max;input.step=step;input.value=Number(val)}input.addEventListener('focus',()=>pushHistory());input.addEventListener(type==='color'?'input':'change',()=>ecFxSet(fx.id,p,type==='number'?Number(input.value):input.value));const kf=document.createElement('button');kf.type='button';kf.className='ec-fx-kf'+(animated?' active':'');kf.textContent='◇ KF';kf.title='Animate '+label;kf.onclick=()=>ecFxToggle(fx.id,p,def);row.append(input,kf);field.append(lab,row);grid.appendChild(field)});card.appendChild(grid)})}
+  function ecAddFxSettings(){
+   const l=activeLayer(),body=document.getElementById('inspectorBody');
+   if(!l||!body||State.inspectorTab!=='effects')return;
+   const counts={};
+   (l.effects||[]).forEach(fx=>{
+    const defs=fxDefs[fx.type]||[];if(!defs.length)return;
+    counts[fx.type]=(counts[fx.type]||0)+1;
+    const label=({oscillate:'Oscillate',autoshake:'Auto Shake',handheld:'Handheld Shake',impact:'Impact Shake',glow:'Glow',shadow:'Shadow',tint:'Tint',vignette:'Vignette',glitch:'Glitch',wave:'Wave',echo:'Echo'})[fx.type]||fx.type;
+    const title=label+' #'+counts[fx.type];
+    let card=null,best=Infinity;
+    body.querySelectorAll('div,section,article').forEach(node=>{
+     if(node.dataset.ecFxSettingsId===String(fx.id))card=node;
+     const txt=(node.textContent||'').trim();
+     if(txt.startsWith(title)&&txt.length<1800&&txt.length<best){card=node;best=txt.length}
+    });
+    if(!card||card.querySelector('.ec-fx-settings'))return;
+    card.dataset.ecFxSettingsId=String(fx.id);
+    const grid=document.createElement('div');grid.className='ec-fx-settings';
+    defs.forEach(([p,name,type,def,min,max,step])=>{
+     const val=ecFxValue(l,fx,p,def),key=ecFxKey(fx,p),animated=(l.keyframes&&l.keyframes[key]||[]).length>0;
+     const field=document.createElement('div');field.className='ec-fx-field';
+     const lab=document.createElement('label');lab.textContent=name;
+     const row=document.createElement('div');row.className='ec-fx-control';
+     const input=document.createElement('input');input.type=type==='color'?'color':'number';
+     if(type==='color'){input.value=val||def}else{input.min=min;input.max=max;input.step=step;input.value=Number(val)}
+     input.addEventListener('focus',()=>pushHistory());
+     input.addEventListener(type==='color'?'input':'change',()=>ecFxSet(fx.id,p,type==='number'?Number(input.value):input.value));
+     const kf=document.createElement('button');kf.type='button';kf.className='ec-fx-kf'+(animated?' active':'');kf.textContent='◇ KF';kf.title='Animate '+name;kf.onclick=()=>ecFxToggle(fx.id,p,def);
+     row.append(input,kf);field.append(lab,row);grid.append(field);
+    });
+    card.append(grid);
+   });
+  }
   const originalInspector=renderInspector;
-  renderInspector=function(){originalInspector();ecAddFxSettings()};window.renderInspector=renderInspector;
+  renderInspector=function(){originalInspector();ecAddFxSettings()};window.renderInspector=renderInspector;try{const ecBody=document.getElementById('inspectorBody');if(ecBody&&window.MutationObserver){new MutationObserver(()=>ecAddFxSettings()).observe(ecBody,{childList:true,subtree:true})}}catch(e){}
   const originalWorldTransform=worldTransform;
   window.worldTransform=function(layer,seen){const tr=originalWorldTransform(layer,seen);let x=tr.x,y=tr.y,rotation=tr.rotation;for(const fx of layer.effects||[]){if(fx.enabled===false||!['oscillate','autoshake','handheld','impact'].includes(fx.type))continue;const amp=(Number(effectValue(layer,fx))||0)*.22*(Number(ecFxValue(layer,fx,'amplitude',100))/100),hz=Math.max(.2,Math.min(60,Number(ecFxValue(layer,fx,'frequency',8))||8)),t=Math.max(0,State.currentTime-layer.startTime),phase=t*hz*Math.PI*2+(Number(ecFxValue(layer,fx,'phase',0))||0)*Math.PI/180,seed=String(layer.id||'').split('').reduce((n,c)=>n+c.charCodeAt(0),0),u=Math.sin(phase+seed*.013),v=Math.cos(phase*.73+seed*.021),rot=Number(ecFxValue(layer,fx,'rotation',1))||0,xm=Number(ecFxValue(layer,fx,'xAmount',100))/100,ym=Number(ecFxValue(layer,fx,'yAmount',100))/100,angle=Number(ecFxValue(layer,fx,'angle',0))*Math.PI/180;let dx=0,dy=0,dr=0;if(fx.type==='oscillate'){const p=t*hz*Math.PI*2+(Number(ecFxValue(layer,fx,'phase',0))||0)*Math.PI/180;dx=Math.sin(p)*amp*2*xm;dy=Math.sin(p+Math.PI/2)*amp*1.4*ym;dr=Math.sin(p)*rot*amp/12}else if(fx.type==='autoshake'){const sm=Math.max(0,Math.min(1,Number(ecFxValue(layer,fx,'smoothness',45))/100)),rate=hz*(1.5-sm),n=Math.floor(t*rate),f=t*rate-n,noise=(k)=>{const z=Math.sin((k+seed)*127.1+seed*311.7)*43758.5453;return (z-Math.floor(z))*2-1},blend=f*f*(3-2*f),nx=noise(n)+(noise(n+1)-noise(n))*blend,ny=noise(n+17)+(noise(n+18)-noise(n+17))*blend;dx=nx*amp*2*xm;dy=ny*amp*2*ym;dr=noise(n+31)*rot*amp/10}else if(fx.type==='handheld'){const rough=Math.max(0,Math.min(1,Number(ecFxValue(layer,fx,'roughness',65))/100)),d=t*hz,sx=Math.sin(d*1.7+.4)+Math.sin(d*.63+2.1)*.45,sy=Math.cos(d*1.3+1.2)+Math.sin(d*.81)*.35,jx=Math.sin(t*(hz*5+2)+seed)*rough*.45,jy=Math.cos(t*(hz*4+2)+seed*.7)*rough*.45;dx=(sx*.55+jx)*amp*xm;dy=(sy*.55+jy)*amp*ym;dr=(Math.sin(d*1.1)*.6+Math.sin(t*(hz*3+1)+seed)*rough*.4)*rot*amp/12}else{const decay=Math.max(.1,Number(ecFxValue(layer,fx,'decay',5))||5),fade=Math.exp(-t*decay),p=t*hz*Math.PI*2,pulse=Math.sin(p)*fade;dx=pulse*amp*2*xm;dy=Math.cos(p*.82)*fade*amp*1.6*ym;dr=pulse*rot*amp/8}const rx=dx*Math.cos(angle)-dy*Math.sin(angle),ry=dx*Math.sin(angle)+dy*Math.cos(angle);x+=rx;y+=ry;rotation+=dr}return{...tr,x,y,rotation}};
   Object.assign(FX,{
