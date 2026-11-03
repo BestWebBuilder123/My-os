@@ -208,6 +208,17 @@ function legacy(id,root){if(id==='activity'){mountActivityTracker(root);return;}
    const l=activeLayer(),body=document.getElementById('inspectorBody');
    if(!l||!body||State.inspectorTab!=='effects')return;
    const labels={oscillate:'Oscillate',autoshake:'Auto Shake',handheld:'Handheld Shake',impact:'Impact Shake',glow:'Glow',shadow:'Shadow',tint:'Tint',vignette:'Vignette',glitch:'Glitch',wave:'Wave',echo:'Echo'};
+   // Remove the complete native EFFECT STACK section (heading, library button and old per-effect rows).
+   // Pick the smallest ancestor that contains both native section labels, leaving the inspector tabs intact.
+   let nativeStack=null,nativeScore=Infinity;
+   body.querySelectorAll('div,section,article').forEach(node=>{
+    if(node.closest('.ec-fx-stack'))return;
+    const txt=(node.textContent||'').replace(/\\s+/g,' ').trim();
+    if(txt.includes('EFFECT STACK')&&txt.toLowerCase().includes('browse library')&&txt.length<nativeScore){
+     nativeStack=node;nativeScore=txt.length;
+    }
+   });
+   if(nativeStack&&nativeStack!==body)nativeStack.remove();
    // Remove the original duplicate effect cards; the replacement cards below contain their controls.
    const counts={};
    (l.effects||[]).forEach(fx=>{const label=labels[fx.type]||fx.type;counts[fx.type]=(counts[fx.type]||0)+1;const title=label+' #'+counts[fx.type];let old=null,score=Infinity;
