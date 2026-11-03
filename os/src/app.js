@@ -208,22 +208,30 @@ function legacy(id,root){if(id==='activity'){mountActivityTracker(root);return;}
    const l=activeLayer(),body=document.getElementById('inspectorBody');
    if(!l||!body||State.inspectorTab!=='effects')return;
    const labels={oscillate:'Oscillate',autoshake:'Auto Shake',handheld:'Handheld Shake',impact:'Impact Shake',glow:'Glow',shadow:'Shadow',tint:'Tint',vignette:'Vignette',glitch:'Glitch',wave:'Wave',echo:'Echo'};
-   // Remove the complete native EFFECT STACK section (heading, library button and old per-effect rows).
-   // Pick the smallest ancestor that contains both native section labels, leaving the inspector tabs intact.
-   let nativeStack=null,nativeScore=Infinity;
+   // Strip the native Effect Stack container every time the inspector renders.
+   // Find the visible section heading, then climb to the nearest ancestor that also owns Browse Library.
+   let headingNode=null;
+   body.querySelectorAll('*').forEach(node=>{if(node.children.length===0&&(node.textContent||'').trim().toUpperCase()==='EFFECT STACK')headingNode=node});
+   if(headingNode){
+    let ancestor=headingNode.parentElement;
+    while(ancestor&&ancestor!==body){
+     const hasBrowse=Array.from(ancestor.querySelectorAll('button,[role="button"],a')).some(el=>(el.textContent||'').toLowerCase().includes('browse library'));
+     if(hasBrowse){ancestor.remove();break}
+     ancestor=ancestor.parentElement;
+    }
+   }
+   // Also hide native per-effect cards by their actual titles (for example "Glow strength #1").
+   const legacyTitles=(l.effects||[]).map(fx=>(labels[fx.type]||fx.type).toLowerCase());
    body.querySelectorAll('div,section,article').forEach(node=>{
     if(node.closest('.ec-fx-stack'))return;
-    const txt=(node.textContent||'').replace(/\\s+/g,' ').trim();
-    if(txt.includes('EFFECT STACK')&&txt.toLowerCase().includes('browse library')&&txt.length<nativeScore){
-     nativeStack=node;nativeScore=txt.length;
+    const t=(node.textContent||'').replace(/\\s+/g,' ').trim().toLowerCase();
+    if(!t||t.length>1200)return;
+    const isLegacy=legacyTitles.some(label=>t.startsWith(label+' strength #')||t.startsWith(label+' #'));
+    if(isLegacy){
+     let card=node;
+     while(card.parentElement&&card.parentElement!==body&&card.parentElement.textContent.trim().length<1400)card=card.parentElement;
+     card.style.setProperty('display','none','important');
     }
-   });
-   if(nativeStack&&nativeStack!==body)nativeStack.remove();
-   // Remove the original duplicate effect cards; the replacement cards below contain their controls.
-   const counts={};
-   (l.effects||[]).forEach(fx=>{const label=labels[fx.type]||fx.type;counts[fx.type]=(counts[fx.type]||0)+1;const title=label+' #'+counts[fx.type];let old=null,score=Infinity;
-    body.querySelectorAll('div,section,article').forEach(node=>{if(node.closest('.ec-fx-stack'))return;const t=(node.textContent||'').trim();if(t.startsWith(title)&&t.length>35&&t.length<1100&&t.length<score){old=node;score=t.length}});
-    if(old)old.style.setProperty('display','none','important');
    });
    let panel=body.querySelector('.ec-fx-stack');
    if(panel&&panel.dataset.layerId===String(l.id))return;
