@@ -208,24 +208,46 @@ function legacy(id,root){if(id==='activity'){mountActivityTracker(root);return;}
    const l=activeLayer(),body=document.getElementById('inspectorBody');
    if(!l||!body||State.inspectorTab!=='effects')return;
    const labels={oscillate:'Oscillate',autoshake:'Auto Shake',handheld:'Handheld Shake',impact:'Impact Shake',glow:'Glow',shadow:'Shadow',tint:'Tint',vignette:'Vignette',glitch:'Glitch',wave:'Wave',echo:'Echo',ray:'Ray'};
-   // Remove the complete original FX stack by matching its section heading and library action.
-   // The heading may contain nested markup, so do not require an exact textContent match.
-   let legacy=null,legacySize=Infinity;
+   // Remove the legacy native FX UI by its stable descriptive text and card controls.
+   // The original bundle uses different wrappers for different effect types, so do not depend on CSS class names.
+   const norm=v=>(v||'').replace(/\\s+/g,' ').trim().toLowerCase();
+   let description=null,descriptionSize=Infinity;
    body.querySelectorAll('*').forEach(node=>{
-    if(node.closest('.ec-fx-stack'))return;
-    const t=(node.textContent||'').replace(/\\s+/g,' ').trim().toLowerCase();
-    if(t.includes('effect stack')&&t.includes('browse library')&&t.length<5000&&t.length<legacySize){legacy=node;legacySize=t.length}
+    if(node.closest('.ec-fx-stack')||node.children.length===0)return;
+    const t=norm(node.textContent);
+    if(t.includes('effects are processed from top to bottom')&&t.length<6000&&t.length<descriptionSize){description=node;descriptionSize=t.length}
    });
-   if(legacy&&legacy!==body)legacy.remove();
-   // Remove any native per-effect rows that remain outside the custom cards.
+   if(description&&description!==body){
+    let section=description;
+    while(section.parentElement&&section.parentElement!==body&&norm(section.parentElement.textContent).length<7000)section=section.parentElement;
+    section.remove();
+   }
+   // Remove each old native effect card by matching its effect title plus its native slider/buttons.
+   const effectNames=(l.effects||[]).map((fx,index)=>{
+    const raw=String(fx.name||fx.label||fx.type||'').replace(/[_-]+/g,' ').trim();
+    return [raw.toLowerCase(),(raw+' #'+(index+1)).toLowerCase(),(raw+' strength #'+(index+1)).toLowerCase()];
+   }).flat().filter(Boolean);
+   const candidates=[];
    body.querySelectorAll('*').forEach(node=>{
-    if(node.closest('.ec-fx-stack'))return;
-    if(node.children.length>0)return;
-    const t=(node.textContent||'').trim().toLowerCase();
-    if(/^(glow|shadow|tint|vignette|glitch|wave|echo|oscillate|auto shake|handheld shake|impact shake)( strength)? #?\\d*$/.test(t)){
-     const card=node.closest('.fx-item,.effect-item,.fx-card,.effect-card');
-     if(card)card.remove();
+    if(node.closest('.ec-fx-stack')||node.children.length!==0)return;
+    const t=norm(node.textContent);
+    if(!effectNames.some(name=>t===name||t.startsWith(name)))return;
+    let card=node;
+    while(card.parentElement&&card.parentElement!==body){
+     const parent=card.parentElement;
+     const hasSlider=!!parent.querySelector('input[type="range"]');
+     const buttons=parent.querySelectorAll('button').length;
+     if(hasSlider&&buttons>=2){card=parent;break}
+     card=parent;
     }
+    if(card!==body)candidates.push(card);
+   });
+   [...new Set(candidates)].forEach(node=>node.remove());
+   // Remove a leftover legacy heading/library row if the native card section was split by the bundle renderer.
+   body.querySelectorAll('*').forEach(node=>{
+    if(node.closest('.ec-fx-stack')||node.children.length===0)return;
+    const t=norm(node.textContent);
+    if(t==='effect stack browse library'||t==='effect stack + browse library'||(t.includes('effect stack')&&t.includes('browse library')&&t.length<180))node.remove();
    });
    const old=body.querySelector('.ec-fx-stack');if(old)old.remove();
    const panel=document.createElement('div');panel.className='ec-fx-stack';panel.dataset.layerId=String(l.id);
