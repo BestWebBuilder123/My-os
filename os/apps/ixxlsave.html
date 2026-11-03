@@ -7,11 +7,6 @@
 <meta name="description" content="Download YouTube and TikTok videos with IxxlSave.">
 <title>IxxlSave — YouTube & TikTok Video Downloader</title>
 
-<!-- AdSense is skipped on file:// to prevent freezing -->
-<script async
-src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-8762344772685196"
-crossorigin="anonymous"></script>
-
 <style>
 :root {
   --bg: #09090b;
@@ -204,22 +199,6 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   color: #fbbf24;
   margin: 0 0 4px;
   line-height: 1.4;
-}
-
-/* ADS */
-.ad-container {
-  margin: 25px 0;
-  padding: 10px 0;
-  text-align: center;
-  overflow: hidden;
-}
-
-.ad-label {
-  display: block;
-  font-size: 10px;
-  letter-spacing: 2px;
-  color: #777;
-  margin-bottom: 10px;
 }
 
 /* STATUS */
@@ -490,15 +469,6 @@ footer {
 
 <main>
 
-  <div class="ad-container">
-    <span class="ad-label">ADVERTISEMENT</span>
-    <ins class="adsbygoogle" style="display:block"
-         data-ad-client="ca-pub-8762344772685196"
-         data-ad-slot="4584691303"
-         data-ad-format="auto"
-         data-full-width-responsive="true"></ins>
-  </div>
-
   <section class="hero">
     <h1>Download Videos<br><span class="gradient">From YouTube &amp; TikTok</span></h1>
     <p>Paste a link, choose your format,<br>and download directly to your device.</p>
@@ -591,15 +561,6 @@ footer {
 
   </section>
 
-  <div class="ad-container">
-    <span class="ad-label">ADVERTISEMENT</span>
-    <ins class="adsbygoogle" style="display:block"
-         data-ad-client="ca-pub-8762344772685196"
-         data-ad-slot="4584691303"
-         data-ad-format="auto"
-         data-full-width-responsive="true"></ins>
-  </div>
-
   <h2 class="section-title">How To Download</h2>
 
   <div class="step">
@@ -627,21 +588,7 @@ footer {
 
 <script>
 /* ============================================================
-   1) ADSENSE — only load on real web pages
-   ============================================================ */
-(function initAds() {
-  const proto = location.protocol;
-  if (proto !== "http:" && proto !== "https:") return;
-
-  try {
-    document.querySelectorAll(".adsbygoogle").forEach(() => {
-      (window.adsbygoogle = window.adsbygoogle || []).push({});
-    });
-  } catch (e) {}
-})();
-
-/* ============================================================
-   2) SHARED HELPERS
+   SHARED HELPERS
    ============================================================ */
 async function tryReadClipboard() {
   try {
@@ -669,8 +616,28 @@ function safeMediaUrl(value) {
   } catch { return null; }
 }
 
+/* Robust fetch for about:blank null origins */
+async function fetchJSON(url, signal) {
+  try {
+    // 1. Try direct fetch
+    const res = await fetch(url, { signal, headers: { "Accept": "application/json" } });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    return await res.json();
+  } catch (e) {
+    if (e.name === "AbortError") throw e;
+    
+    // 2. Fallback to Codetabs CORS Proxy (works well for about:blank)
+    console.warn("Direct fetch failed (likely CORS), trying proxy...", e.message);
+    const proxyUrl = "https://api.codetabs.com/v1/proxy?quest=" + encodeURIComponent(url);
+    
+    const proxyRes = await fetch(proxyUrl, { signal, headers: { "Accept": "application/json" } });
+    if (!proxyRes.ok) throw new Error("Proxy HTTP " + proxyRes.status);
+    return await proxyRes.json();
+  }
+}
+
 /* ============================================================
-   3) TAB SWITCHING
+   TAB SWITCHING
    ============================================================ */
 (function initTabs() {
   const tabs = document.querySelectorAll(".tab");
@@ -691,7 +658,7 @@ function safeMediaUrl(value) {
 })();
 
 /* ============================================================
-   4) YOUTUBE (Direct Fetch Only)
+   YOUTUBE
    ============================================================ */
 (function initYouTube() {
   const $ = id => document.getElementById(id);
@@ -763,19 +730,12 @@ function safeMediaUrl(value) {
     setLoading(true);
 
     const controller = new AbortController();
-    // 12 second timeout so it doesn't spin forever
-    const timeout = setTimeout(() => controller.abort(), 12000);
+    // Strict 10-second timeout so it fails fast instead of hanging
+    const timeout = setTimeout(() => controller.abort(), 10000);
 
     try {
       const apiUrl = `https://btch-downloader-api-green.vercel.app/api/download/youtube?url=${encodeURIComponent(link)}`;
-      
-      const response = await fetch(apiUrl, {
-        signal: controller.signal,
-        headers: { "Accept": "application/json" }
-      });
-
-      if (!response.ok) throw new Error("Video service unavailable (" + response.status + ").");
-      const json = await response.json();
+      const json = await fetchJSON(apiUrl, controller.signal);
       
       if (!json.success) throw new Error(json.error?.message || "Unable to retrieve video.");
       displayVideo(json);
@@ -783,11 +743,9 @@ function safeMediaUrl(value) {
     } catch (e) {
       console.error("[IxxlSave YT]", e);
       if (e.name === "AbortError") {
-        showError("Request timed out. The API might be down or blocked by your network.");
-      } else if (e instanceof TypeError) {
-        showError("Network blocked. The school Wi-Fi or your browser is blocking the API. Try using a mobile hotspot.");
+        showError("Request timed out. Your Chromebook extensions or network may be blocking the API.");
       } else {
-        showError(e.message || "Failed to fetch video.");
+        showError("Connection failed. The API may be temporarily down, or blocked by your school Chromebook's security policy.");
       }
     } finally {
       clearTimeout(timeout);
@@ -855,7 +813,7 @@ function safeMediaUrl(value) {
 })();
 
 /* ============================================================
-   5) TIKTOK (Direct Fetch Only)
+   TIKTOK
    ============================================================ */
 (function initTikTok() {
   const $ = id => document.getElementById(id);
@@ -936,18 +894,11 @@ function safeMediaUrl(value) {
     setLoading(true);
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 12000);
+    const timeout = setTimeout(() => controller.abort(), 10000);
 
     try {
       const apiUrl = `https://www.tikwm.com/api/?url=${encodeURIComponent(link)}&hd=1`;
-      
-      const response = await fetch(apiUrl, {
-        signal: controller.signal,
-        headers: { "Accept": "application/json" }
-      });
-
-      if (!response.ok) throw new Error("Video service unavailable (" + response.status + ").");
-      const json = await response.json();
+      const json = await fetchJSON(apiUrl, controller.signal);
       
       if (json.code !== 0 || !json.data) throw new Error(json.msg || "Unable to retrieve video.");
       displayVideo(json.data);
@@ -955,11 +906,9 @@ function safeMediaUrl(value) {
     } catch (e) {
       console.error("[IxxlSave TT]", e);
       if (e.name === "AbortError") {
-        showError("Request timed out. The API might be down or blocked by your network.");
-      } else if (e instanceof TypeError) {
-        showError("Network blocked. The school Wi-Fi or your browser is blocking the API. Try using a mobile hotspot.");
+        showError("Request timed out. Your Chromebook extensions or network may be blocking the API.");
       } else {
-        showError(e.message || "Failed to fetch video.");
+        showError("Connection failed. The API may be temporarily down, or blocked by your school Chromebook's security policy.");
       }
     } finally {
       clearTimeout(timeout);
