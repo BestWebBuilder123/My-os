@@ -998,3 +998,160 @@ document.querySelectorAll(".adsbygoogle").forEach(() => {
           ["utm_source", "utm_medium", "utm_campaign",
            "utm_content", "utm_term", "_r", "_t"].forEach(p => {
             url.searchParams.delete(p);
+          });
+          return url.toString();
+        }
+      } catch { continue; }
+    }
+    return null;
+  }
+
+  function safeMediaUrl(value) {
+    if (!value || typeof value !== "string") return null;
+    try {
+      const url = new URL(value, "https://www.tikwm.com");
+      if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+      return url.href;
+    } catch { return null; }
+  }
+
+  pasteBtn.addEventListener("click", async () => {
+    clearError();
+    try {
+      const text = await navigator.clipboard.readText();
+      videoUrl.value = extractTikTokLink(text) || text.trim();
+    } catch {
+      showError("Clipboard unavailable. Please paste manually.");
+    }
+  });
+
+  fetchBtn.addEventListener("click", fetchVideo);
+  videoUrl.addEventListener("keydown", e => {
+    if (e.key === "Enter") fetchVideo();
+  });
+
+  qualitySlider.addEventListener("input", updateQuality);
+
+  async function fetchVideo() {
+    if (loading) return;
+    clearError();
+    resultBox.style.display = "none";
+    videoSources = [];
+
+    const link = extractTikTokLink(videoUrl.value);
+    if (!link) {
+      showError("Please enter a valid TikTok or TikTok Lite link.");
+      return;
+    }
+
+    videoUrl.value = link;
+    setLoading(true);
+
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 20000);
+
+      let response;
+      try {
+        response = await fetch(
+          "https://www.tikwm.com/api/?" +
+          new URLSearchParams({ url: link, hd: "1" }),
+          { signal: controller.signal, headers: { "Accept": "application/json" } }
+        );
+      } finally {
+        clearTimeout(timeout);
+      }
+
+      if (!response.ok) throw new Error("Video service unavailable.");
+
+      const json = await response.json();
+      if (json.code !== 0 || !json.data) {
+        throw new Error(json.msg || "Unable to retrieve video.");
+      }
+
+      displayVideo(json.data);
+    } catch (e) {
+      console.error(e);
+      if (e.name === "AbortError") {
+        showError("Request timed out. Please try again.");
+      } else if (e instanceof TypeError) {
+        showError("Could not connect to the video service. A backend may be needed.");
+      } else {
+        showError(e.message || "Failed to fetch video.");
+      }
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function displayVideo(data) {
+    $("ttTitle").textContent = data.title || "TikTok Video";
+    $("ttAuthor").textContent =
+      data.author?.unique_id ? "@" + data.author.unique_id : "TikTok Creator";
+
+    const cover = safeMediaUrl(data.cover);
+    const thumbEl = $("ttThumbnail");
+    if (cover) {
+      thumbEl.src = cover;
+      thumbEl.style.display = "block";
+    } else {
+      thumbEl.removeAttribute("src");
+      thumbEl.style.display = "none";
+    }
+
+    const standard = safeMediaUrl(data.play);
+    const hd       = safeMediaUrl(data.hdplay);
+
+    if (standard) videoSources.push({ label: "Standard", url: standard });
+    if (hd && hd !== standard) videoSources.push({ label: "HD / Best Available", url: hd });
+
+    const audio = safeMediaUrl(data.music);
+
+    qualitySlider.min = 0;
+    qualitySlider.max = Math.max(0, videoSources.length - 1);
+    qualitySlider.value = qualitySlider.max;
+    qualitySlider.disabled = videoSources.length < 2;
+
+    updateQuality();
+
+    videoDownload.hidden = videoSources.length === 0;
+
+    if (audio) {
+      audioDownload.href = audio;
+      audioDownload.hidden = false;
+    } else {
+      audioDownload.removeAttribute("href");
+      audioDownload.hidden = true;
+    }
+
+    if (!videoSources.length && !audio) {
+      throw new Error("No downloadable media available.");
+    }
+
+    resultBox.style.display = "block";
+    resultBox.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
+  function updateQuality() {
+    if (!videoSources.length) {
+      qualityValue.textContent = "Unavailable";
+      qualityNote.textContent = "No video source available.";
+      videoDownload.removeAttribute("href");
+      return;
+    }
+
+    const index = Number(qualitySlider.value);
+    const selected = videoSources[index] || videoSources[0];
+
+    qualityValue.textContent = selected.label;
+    qualityNote.textContent = videoSources.length > 1
+      ? "Choose from available video qualities."
+      : "Only one video quality is available.";
+
+    videoDownload.href = selected.url;
+  }
+})();
+</script>
+
+</body>
+</html>
