@@ -137,7 +137,7 @@ function legacy(id,root){if(id==='activity'){mountActivityTracker(root);return;}
   frame.srcdoc=loading;
   fetch(new URL('apps/ixxlsave.html',document.baseURI).href,{cache:'force-cache'})
    .then(response=>{if(!response.ok)throw new Error('IxxlSave file failed to load (HTTP '+response.status+').');return response.text()})
-   .then(html=>{if(!/<html[\\s>]/i.test(html))throw new Error('The IxxlSave HTML file is incomplete.');const baseTag='<base href="'+new URL('apps/',document.baseURI).href+'">';html=/<head[^>]*>/i.test(html)?html.replace(/<head[^>]*>/i,head=>head+baseTag):baseTag+html;frame.srcdoc=html})
+   .then(html=>{if(!/<html\b/i.test(html))throw new Error('The IxxlSave HTML file is incomplete.');const baseTag='<base href="'+new URL('apps/',document.baseURI).href+'">';html=/<head[^>]*>/i.test(html)?html.replace(/<head[^>]*>/i,head=>head+baseTag):baseTag+html;frame.srcdoc=html})
    .catch(err=>{const msg=String(err&&err.message||err).replace(/[&<>"]/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch]));frame.srcdoc='<!doctype html><html><head><meta charset="utf-8"><style>body{margin:0;padding:30px;background:#09090b;color:#eee;font:14px system-ui}pre{white-space:pre-wrap;color:#ffb4b4;background:#18181b;padding:14px;border-radius:8px}</style></head><body><h2>IxxlSave could not start</h2><p>The app could not be loaded from the OS app files.</p><pre>'+msg+'</pre></body></html>'});
   return;
 }if(id==='photoeditor'){
