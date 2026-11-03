@@ -198,7 +198,7 @@ function legacy(id,root){if(id==='activity'){mountActivityTracker(root);return;}
    vignette:[['size','Size','number',68,10,100,1],['softness','Softness','number',12,0,60,1]],
    glitch:[['slices','Slices','number',30,2,120,1],['speed','Speed','number',1,.1,10,.1]],
    wave:[['frequency','Frequency','number',.035,.005,.2,.005],['amplitude','Amplitude','number',1,0,5,.1],['speed','Speed','number',5,0,20,.1]],
-   echo:[['offset','Offset','number',8,0,100,1],['opacity','Opacity','number',35,0,100,1]]
+   echo:[['offset','Offset','number',8,0,100,1],['opacity','Opacity','number',35,0,100,1]],\n   ray:[['color','Ray color','color','#ffe6a3'],['count','Ray count','number',18,4,64,1],['angle','Direction angle','number',0,-180,180,1],['spread','Spread','number',70,5,180,1],['length','Length','number',100,10,200,1],['opacity','Opacity','number',55,0,100,1],['softness','Softness','number',45,0,100,1]]
   };
   function ecFxKey(fx,p){return 'fx_'+fx.id+'_'+p}
   function ecFxValue(layer,fx,p,def){return evalProp(layer,ecFxKey(fx,p),fx[p]===undefined?def:fx[p])}
@@ -207,88 +207,73 @@ function legacy(id,root){if(id==='activity'){mountActivityTracker(root);return;}
   function ecAddFxSettings(){
    const l=activeLayer(),body=document.getElementById('inspectorBody');
    if(!l||!body||State.inspectorTab!=='effects')return;
-   const labels={oscillate:'Oscillate',autoshake:'Auto Shake',handheld:'Handheld Shake',impact:'Impact Shake',glow:'Glow',shadow:'Shadow',tint:'Tint',vignette:'Vignette',glitch:'Glitch',wave:'Wave',echo:'Echo'};
-   // Strip the native Effect Stack container every time the inspector renders.
-   // Find the visible section heading, then climb to the nearest ancestor that also owns Browse Library.
-   let headingNode=null;
-   body.querySelectorAll('*').forEach(node=>{if(node.children.length===0&&(node.textContent||'').trim().toUpperCase()==='EFFECT STACK')headingNode=node});
-   if(headingNode){
-    let ancestor=headingNode.parentElement;
-    while(ancestor&&ancestor!==body){
-     const hasBrowse=Array.from(ancestor.querySelectorAll('button,[role="button"],a')).some(el=>(el.textContent||'').toLowerCase().includes('browse library'));
-     if(hasBrowse){ancestor.remove();break}
-     ancestor=ancestor.parentElement;
+   const labels={oscillate:'Oscillate',autoshake:'Auto Shake',handheld:'Handheld Shake',impact:'Impact Shake',glow:'Glow',shadow:'Shadow',tint:'Tint',vignette:'Vignette',glitch:'Glitch',wave:'Wave',echo:'Echo',ray:'Ray'};
+   // Remove native Effect Stack and its Browse Library control once per inspector render.
+   const headings=body.querySelectorAll('*');
+   for(const node of headings){if((node.textContent||'').trim().toUpperCase()!=='EFFECT STACK')continue;
+    let parent=node.parentElement;
+    while(parent&&parent!==body){
+     const browse=parent.querySelector('button,[role="button"],a');
+     if(browse&&/browse library/i.test(parent.textContent||'')){parent.remove();break}
+     parent=parent.parentElement;
+    }
+    break;
+   }
+   // Remove native legacy effect rows without walking and rewriting the whole inspector tree.
+   for(const node of body.querySelectorAll('[class*="fx"],[class*="effect"]')){
+    if(node.closest('.ec-fx-stack'))continue;
+    const text=(node.textContent||'').trim().toLowerCase();
+    if(/^(glow|shadow|tint|vignette|glitch|wave|echo|oscillate|auto shake|handheld shake|impact shake)( strength)? #?\d*/.test(text)){
+     const parent=node.closest('.fx-item,.effect-item,.fx-card,.effect-card')||node;
+     parent.remove();
     }
    }
-   // Also hide native per-effect cards by their actual titles (for example "Glow strength #1").
-   const legacyTitles=(l.effects||[]).map(fx=>(labels[fx.type]||fx.type).toLowerCase());
-   body.querySelectorAll('div,section,article').forEach(node=>{
-    if(node.closest('.ec-fx-stack'))return;
-    const t=(node.textContent||'').replace(/\\s+/g,' ').trim().toLowerCase();
-    if(!t||t.length>1200)return;
-    const isLegacy=legacyTitles.some(label=>t.startsWith(label+' strength #')||t.startsWith(label+' #'));
-    if(isLegacy){
-     let card=node;
-     while(card.parentElement&&card.parentElement!==body&&card.parentElement.textContent.trim().length<1400)card=card.parentElement;
-     card.style.setProperty('display','none','important');
-    }
-   });
-   let panel=body.querySelector('.ec-fx-stack');
-   if(panel&&panel.dataset.layerId===String(l.id))return;
-   if(panel)panel.remove();
-   panel=document.createElement('div');panel.className='ec-fx-stack';panel.dataset.layerId=String(l.id);
+   const old=body.querySelector('.ec-fx-stack');if(old)old.remove();
+   const panel=document.createElement('div');panel.className='ec-fx-stack';panel.dataset.layerId=String(l.id);
    const heading=document.createElement('div');heading.className='ec-fx-stack-heading';heading.textContent='EFFECT CONTROLS';panel.append(heading);
    const effects=l.effects||[];
    if(!effects.length){const empty=document.createElement('div');empty.className='ec-fx-empty';empty.textContent='Add an effect to see its controls.';panel.append(empty)}
    effects.forEach((fx,index)=>{
-    const defs=fxDefs[fx.type]||[];if(!defs.length)return;
+    const defs=fxDefs[fx.type]||[];
     const card=document.createElement('section');card.className='ec-fx-card';
     const head=document.createElement('div');head.className='ec-fx-card-head';
-    const name=document.createElement('div');name.className='ec-fx-name';name.textContent=labels[fx.type]||fx.type;
+    const name=document.createElement('div');name.className='ec-fx-name';name.textContent=labels[fx.type]||fx.label||fx.type||'Effect';
     const actions=document.createElement('div');actions.className='ec-fx-actions';
     const moveLabel=document.createElement('span');moveLabel.className='ec-fx-move-label';moveLabel.textContent='Move';
     const up=document.createElement('button');up.type='button';up.className='ec-fx-move';up.textContent='↑';up.title='Move effect up';up.disabled=index===0;
     up.onclick=()=>{const at=l.effects.indexOf(fx);if(at>0){pushHistory();l.effects.splice(at,1);l.effects.splice(at-1,0,fx);renderInspector();drawFrame()}};
     const down=document.createElement('button');down.type='button';down.className='ec-fx-move';down.textContent='↓';down.title='Move effect down';down.disabled=index===effects.length-1;
     down.onclick=()=>{const at=l.effects.indexOf(fx);if(at>=0&&at<l.effects.length-1){pushHistory();l.effects.splice(at,1);l.effects.splice(at+1,0,fx);renderInspector();drawFrame()}};
-    const remove=document.createElement('button');remove.type='button';remove.className='ec-fx-delete';remove.textContent='×';remove.title='Delete effect';remove.setAttribute('aria-label','Delete '+(labels[fx.type]||fx.type));remove.onclick=()=>{if(!Array.isArray(l.effects))return;pushHistory();const at=l.effects.indexOf(fx);if(at<0)return;l.effects.splice(at,1);const prefix='fx_'+fx.id+'_';if(l.keyframes)Object.keys(l.keyframes).forEach(key=>{if(key.startsWith(prefix))delete l.keyframes[key]});renderInspector();renderTimeline();drawFrame()};
-    const toggle=document.createElement('button');toggle.type='button';toggle.className='ec-fx-toggle'+(fx.enabled===false?'':' active');toggle.textContent=fx.enabled===false?'OFF':'ON';toggle.setAttribute('aria-pressed',String(fx.enabled!==false));
-    toggle.onclick=()=>{pushHistory();fx.enabled=fx.enabled===false?true:false;renderInspector();drawFrame()};
+    const toggle=document.createElement('button');toggle.type='button';toggle.className='ec-fx-toggle'+(fx.enabled===false?'':' active');toggle.textContent=fx.enabled===false?'OFF':'ON';toggle.onclick=()=>{pushHistory();fx.enabled=fx.enabled===false?true:false;renderInspector();drawFrame()};
+    const remove=document.createElement('button');remove.type='button';remove.className='ec-fx-delete';remove.textContent='×';remove.title='Delete effect';remove.onclick=()=>{pushHistory();const at=l.effects.indexOf(fx);if(at<0)return;l.effects.splice(at,1);const prefix='fx_'+fx.id+'_';if(l.keyframes)Object.keys(l.keyframes).forEach(k=>{if(k.startsWith(prefix))delete l.keyframes[k]});renderInspector();renderTimeline();drawFrame()};
     const collapse=document.createElement('button');collapse.type='button';collapse.className='ec-fx-collapse';collapse.textContent='⌄';collapse.title='Collapse effect settings';collapse.setAttribute('aria-expanded','true');
     actions.append(moveLabel,up,down,toggle,remove,collapse);head.append(name,actions);card.append(head);
     const content=document.createElement('div');content.className='ec-fx-card-body';
-    const addSlider=(p,label,def,min,max,step)=>{
+    const addControl=(p,label,type,def,min,max,step)=>{
      const field=document.createElement('div');field.className='ec-fx-field';const lab=document.createElement('label');lab.textContent=label;field.append(lab);
-     const row=document.createElement('div');row.className='ec-fx-control';const input=document.createElement('input');input.type='range';input.className='ec-fx-slider';input.min=min;input.max=max;input.step=step;input.value=Number(ecFxValue(l,fx,p,def));
-     const output=document.createElement('output');output.className='ec-fx-value';output.textContent=String(Number(input.value));
-     input.addEventListener('pointerdown',()=>pushHistory(),{once:true});input.addEventListener('input',()=>{output.textContent=String(input.value);ecFxSet(fx.id,p,Number(input.value))});
-     const key=ecFxKey(fx,p),animated=(l.keyframes&&l.keyframes[key]||[]).length>0;const kf=document.createElement('button');kf.type='button';kf.className='ec-fx-kf'+(animated?' active':'');kf.textContent='◇ KF';kf.title='Animate '+label;kf.onclick=()=>ecFxToggle(fx.id,p,def);
-     row.append(input,output,kf);field.append(row);content.append(field);
-    };
-    addSlider('value','Effect Amount',0,0,100,1);
-    defs.forEach(([p,label,type,def,min,max,step])=>{
-     const field=document.createElement('div');field.className='ec-fx-field';const lab=document.createElement('label');lab.textContent=label;field.append(lab);
-     const row=document.createElement('div');row.className='ec-fx-control';
-     const input=document.createElement('input');input.type=type==='color'?'color':'range';input.className='ec-fx-slider';
+     const row=document.createElement('div');row.className='ec-fx-control';const input=document.createElement('input');input.type=type==='color'?'color':'range';input.className='ec-fx-slider';
      let output=null;if(type==='color'){input.value=ecFxValue(l,fx,p,def)||def}else{input.min=min;input.max=max;input.step=step;input.value=Number(ecFxValue(l,fx,p,def));output=document.createElement('output');output.className='ec-fx-value';output.textContent=String(Number(input.value))}
-     input.addEventListener('pointerdown',()=>pushHistory(),{once:true});input.addEventListener('input',()=>{const value=type==='color'?input.value:Number(input.value);if(output)output.textContent=String(value);ecFxSet(fx.id,p,value)});
-     const key=ecFxKey(fx,p),animated=(l.keyframes&&l.keyframes[key]||[]).length>0;const kf=document.createElement('button');kf.type='button';kf.className='ec-fx-kf'+(animated?' active':'');kf.textContent='◇ KF';kf.title='Animate '+label;kf.onclick=()=>ecFxToggle(fx.id,p,def);
+     input.addEventListener('change',()=>pushHistory(),{once:true});input.addEventListener('input',()=>{const v=type==='color'?input.value:Number(input.value);if(output)output.textContent=String(v);ecFxSet(fx.id,p,v)});
+     const key=ecFxKey(fx,p),animated=(l.keyframes&&l.keyframes[key]||[]).length>0;const kf=document.createElement('button');kf.type='button';kf.className='ec-fx-kf'+(animated?' active':'');kf.textContent='◇ KF';kf.onclick=()=>ecFxToggle(fx.id,p,def);
      row.append(input);if(output)row.append(output);row.append(kf);field.append(row);content.append(field);
-    });
-    collapse.onclick=()=>{const closed=content.hidden;content.hidden=!closed;collapse.textContent=closed?'⌄':'›';collapse.title=closed?'Collapse effect settings':'Expand effect settings';collapse.setAttribute('aria-expanded',String(closed));card.classList.toggle('collapsed',!closed)};
+    };
+    addControl('value','Effect Amount','number',fx.value??(FX[fx.type]?.def??50),0,100,1);
+    if(defs.length)defs.forEach(([p,label,type,def,min,max,step])=>addControl(p,label,type,def,min,max,step));
+    else{addControl('speed','Speed','number',1,.1,10,.1);addControl('angle','Angle','number',0,-180,180,1);addControl('amount','Amount','number',50,0,100,1)}
+    collapse.onclick=()=>{const closed=!content.hidden;content.hidden=closed;collapse.textContent=closed?'›':'⌄';collapse.title=closed?'Expand effect settings':'Collapse effect settings';collapse.setAttribute('aria-expanded',String(!closed))};
     card.append(content);panel.append(card);
    });
    body.append(panel);
   }
   const originalInspector=renderInspector;
-  renderInspector=function(){originalInspector();ecAddFxSettings()};window.renderInspector=renderInspector;try{const ecBody=document.getElementById('inspectorBody');if(ecBody&&window.MutationObserver){new MutationObserver(()=>ecAddFxSettings()).observe(ecBody,{childList:true,subtree:true})}}catch(e){}
+  renderInspector=function(){originalInspector();ecAddFxSettings()};window.renderInspector=renderInspector;
   const originalWorldTransform=worldTransform;
   window.worldTransform=function(layer,seen){const tr=originalWorldTransform(layer,seen);let x=tr.x,y=tr.y,rotation=tr.rotation;for(const fx of layer.effects||[]){if(fx.enabled===false||!['oscillate','autoshake','handheld','impact'].includes(fx.type))continue;const amp=(Number(effectValue(layer,fx))||0)*.22*(Number(ecFxValue(layer,fx,'amplitude',100))/100),hz=Math.max(.2,Math.min(60,Number(ecFxValue(layer,fx,'frequency',8))||8)),t=Math.max(0,State.currentTime-layer.startTime),phase=t*hz*Math.PI*2+(Number(ecFxValue(layer,fx,'phase',0))||0)*Math.PI/180,seed=String(layer.id||'').split('').reduce((n,c)=>n+c.charCodeAt(0),0),u=Math.sin(phase+seed*.013),v=Math.cos(phase*.73+seed*.021),rot=Number(ecFxValue(layer,fx,'rotation',1))||0,xm=Number(ecFxValue(layer,fx,'xAmount',100))/100,ym=Number(ecFxValue(layer,fx,'yAmount',100))/100,angle=Number(ecFxValue(layer,fx,'angle',0))*Math.PI/180;let dx=0,dy=0,dr=0;if(fx.type==='oscillate'){const p=t*hz*Math.PI*2+(Number(ecFxValue(layer,fx,'phase',0))||0)*Math.PI/180;dx=Math.sin(p)*amp*2*xm;dy=Math.sin(p+Math.PI/2)*amp*1.4*ym;dr=Math.sin(p)*rot*amp/12}else if(fx.type==='autoshake'){const sm=Math.max(0,Math.min(1,Number(ecFxValue(layer,fx,'smoothness',45))/100)),rate=hz*(1.5-sm),n=Math.floor(t*rate),f=t*rate-n,noise=(k)=>{const z=Math.sin((k+seed)*127.1+seed*311.7)*43758.5453;return (z-Math.floor(z))*2-1},blend=f*f*(3-2*f),nx=noise(n)+(noise(n+1)-noise(n))*blend,ny=noise(n+17)+(noise(n+18)-noise(n+17))*blend;dx=nx*amp*2*xm;dy=ny*amp*2*ym;dr=noise(n+31)*rot*amp/10}else if(fx.type==='handheld'){const rough=Math.max(0,Math.min(1,Number(ecFxValue(layer,fx,'roughness',65))/100)),d=t*hz,sx=Math.sin(d*1.7+.4)+Math.sin(d*.63+2.1)*.45,sy=Math.cos(d*1.3+1.2)+Math.sin(d*.81)*.35,jx=Math.sin(t*(hz*5+2)+seed)*rough*.45,jy=Math.cos(t*(hz*4+2)+seed*.7)*rough*.45;dx=(sx*.55+jx)*amp*xm;dy=(sy*.55+jy)*amp*ym;dr=(Math.sin(d*1.1)*.6+Math.sin(t*(hz*3+1)+seed)*rough*.4)*rot*amp/12}else{const decay=Math.max(.1,Number(ecFxValue(layer,fx,'decay',5))||5),fade=Math.exp(-t*decay),p=t*hz*Math.PI*2,pulse=Math.sin(p)*fade;dx=pulse*amp*2*xm;dy=Math.cos(p*.82)*fade*amp*1.6*ym;dr=pulse*rot*amp/8}const rx=dx*Math.cos(angle)-dy*Math.sin(angle),ry=dx*Math.sin(angle)+dy*Math.cos(angle);x+=rx;y+=ry;rotation+=dr}return{...tr,x,y,rotation}};
   Object.assign(FX,{
    oscillate:{label:'Oscillate',min:0,max:100,step:1,def:0,unit:'%'},
    autoshake:{label:'Auto Shake',min:0,max:100,step:1,def:0,unit:'%'},
    handheld:{label:'Handheld Shake',min:0,max:100,step:1,def:0,unit:'%'},
-   impact:{label:'Impact Shake',min:0,max:100,step:1,def:0,unit:'%'}
+   impact:{label:'Impact Shake',min:0,max:100,step:1,def:0,unit:'%'},\n   ray:{label:'Ray',min:0,max:100,step:1,def:55,unit:'%'}
   });
   // Add the shake category to the native effect registry without removing existing groups.
   try{if(typeof FX_GROUPS!=='undefined'&&typeof buildFxLibrary==='function'){FX_GROUPS['Motion & Shake']=['oscillate','autoshake','handheld','impact'];buildFxLibrary()}}catch(registryError){console.warn('Shake category registration skipped',registryError)}
@@ -296,7 +281,7 @@ function legacy(id,root){if(id==='activity'){mountActivityTracker(root);return;}
   if(fxLibrary){
    let group=[...fxLibrary.querySelectorAll('.fx-group')].find(g=>/motion|shake/i.test(g.querySelector('.fx-group-title')?.textContent||''));
    if(!group){group=document.createElement('div');group.className='fx-group';const title=document.createElement('div');title.className='fx-group-title';title.textContent='Motion & Shake';group.appendChild(title);fxLibrary.appendChild(group)}
-   [['oscillate','Oscillate'],['autoshake','Auto Shake'],['handheld','Handheld Shake'],['impact','Impact Shake']].forEach(([type,label])=>{
+   [['oscillate','Oscillate'],['autoshake','Auto Shake'],['handheld','Handheld Shake'],['impact','Impact Shake'],['ray','Ray']].forEach(([type,label])=>{
     if(fxLibrary.querySelector('[data-fx="'+type+'"]'))return;
     const item=document.createElement('div');item.className='fx-item';item.dataset.fx=type;item.innerHTML=label+' <span>＋</span>';item.addEventListener('click',()=>addEffectToSelected(type));group.appendChild(item)
    });
