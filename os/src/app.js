@@ -208,26 +208,25 @@ function legacy(id,root){if(id==='activity'){mountActivityTracker(root);return;}
    const l=activeLayer(),body=document.getElementById('inspectorBody');
    if(!l||!body||State.inspectorTab!=='effects')return;
    const labels={oscillate:'Oscillate',autoshake:'Auto Shake',handheld:'Handheld Shake',impact:'Impact Shake',glow:'Glow',shadow:'Shadow',tint:'Tint',vignette:'Vignette',glitch:'Glitch',wave:'Wave',echo:'Echo',ray:'Ray'};
-   // Remove native Effect Stack and its Browse Library control once per inspector render.
-   const headings=body.querySelectorAll('*');
-   for(const node of headings){if((node.textContent||'').trim().toUpperCase()!=='EFFECT STACK')continue;
-    let parent=node.parentElement;
-    while(parent&&parent!==body){
-     const browse=parent.querySelector('button,[role="button"],a');
-     if(browse&&/browse library/i.test(parent.textContent||'')){parent.remove();break}
-     parent=parent.parentElement;
+   // Remove the complete original FX stack by matching its section heading and library action.
+   // The heading may contain nested markup, so do not require an exact textContent match.
+   let legacy=null,legacySize=Infinity;
+   body.querySelectorAll('*').forEach(node=>{
+    if(node.closest('.ec-fx-stack'))return;
+    const t=(node.textContent||'').replace(/\\s+/g,' ').trim().toLowerCase();
+    if(t.includes('effect stack')&&t.includes('browse library')&&t.length<5000&&t.length<legacySize){legacy=node;legacySize=t.length}
+   });
+   if(legacy&&legacy!==body)legacy.remove();
+   // Remove any native per-effect rows that remain outside the custom cards.
+   body.querySelectorAll('*').forEach(node=>{
+    if(node.closest('.ec-fx-stack'))return;
+    if(node.children.length>0)return;
+    const t=(node.textContent||'').trim().toLowerCase();
+    if(/^(glow|shadow|tint|vignette|glitch|wave|echo|oscillate|auto shake|handheld shake|impact shake)( strength)? #?\\d*$/.test(t)){
+     const card=node.closest('.fx-item,.effect-item,.fx-card,.effect-card');
+     if(card)card.remove();
     }
-    break;
-   }
-   // Remove native legacy effect rows without walking and rewriting the whole inspector tree.
-   for(const node of body.querySelectorAll('[class*="fx"],[class*="effect"]')){
-    if(node.closest('.ec-fx-stack'))continue;
-    const text=(node.textContent||'').trim().toLowerCase();
-    if(/^(glow|shadow|tint|vignette|glitch|wave|echo|oscillate|auto shake|handheld shake|impact shake)( strength)? #?\d*/.test(text)){
-     const parent=node.closest('.fx-item,.effect-item,.fx-card,.effect-card')||node;
-     parent.remove();
-    }
-   }
+   });
    const old=body.querySelector('.ec-fx-stack');if(old)old.remove();
    const panel=document.createElement('div');panel.className='ec-fx-stack';panel.dataset.layerId=String(l.id);
    const heading=document.createElement('div');heading.className='ec-fx-stack-heading';heading.textContent='EFFECT CONTROLS';panel.append(heading);
