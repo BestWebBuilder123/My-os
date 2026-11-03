@@ -185,7 +185,7 @@ function legacy(id,root){if(id==='activity'){mountActivityTracker(root);return;}
 (function(){
  try{
   const fxStyle=document.createElement('style');
-  fxStyle.textContent='.ec-fx-settings{display:grid;grid-template-columns:1fr 1fr;gap:8px 10px;margin-top:10px;padding-top:9px;border-top:1px solid #303747}.ec-fx-field{min-width:0}.ec-fx-field label{display:block;font-size:9px;color:#929bad;margin:0 0 5px;font-weight:650}.ec-fx-control{display:flex;gap:5px;align-items:center}.ec-fx-control input,.ec-fx-control select{box-sizing:border-box;width:100%;min-width:0;padding:6px;background:#0f1219;border:1px solid #303747;border-radius:6px;color:#e5e8f0;font-size:10px}.ec-fx-control input[type=color]{height:29px;padding:2px}.ec-fx-kf{flex:none;border:1px solid #564a83;background:#2a2444;color:#bbaaff;border-radius:5px;padding:4px 6px;font-size:9px}.ec-fx-kf.active{background:#59488d;color:white}@media(max-width:520px){.ec-fx-settings{grid-template-columns:1fr}}';
+  fxStyle.textContent='.ec-fx-settings{box-sizing:border-box;display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 14px;margin:12px 0 4px;padding:14px 10px 8px;border-top:1px solid #46516a;width:100%;min-width:0;max-width:100%;flex:0 0 100%;grid-column:1/-1;align-self:stretch}.fx-control{box-sizing:border-box;display:flex;flex-wrap:wrap;align-items:center;min-width:0}.ec-fx-field{box-sizing:border-box;display:block!important;min-width:0;width:100%;}.ec-fx-field label{display:block;font-size:11px;line-height:1.35;color:#c5cee0;margin:0 0 7px;font-weight:650;overflow-wrap:anywhere}.ec-fx-control{box-sizing:border-box;display:flex;gap:8px;align-items:center;width:100%;min-width:0}.ec-fx-control input[type=range]{appearance:auto;-webkit-appearance: auto;display:block;flex:1 1 70px;width:100%;min-width:50px;height:22px;padding:0;margin:0;accent-color:#9c83ff;background:transparent;border:0}.ec-fx-control input[type=color]{box-sizing:border-box;flex:1;min-width:35px;height:32px;padding:2px;background:#151a26;border:1px solid #46516a;border-radius:7px}.ec-fx-value{flex:0 0 42px;text-align:right;color:#e8eafa;font-size:10px;font-variant-numeric:tabular-nums}.ec-fx-kf{flex:none;border:1px solid #7160a5;background:#30284d;color:#d1c3ff;border-radius:7px;padding:7px 9px;font-size:10px;white-space:nowrap}.ec-fx-kf.active{background:#59488d;color:white}@media(max-width:520px){.ec-fx-settings{grid-template-columns:minmax(0,1fr);gap:10px;padding:12px 8px}.ec-fx-control input[type=range]{min-width:70px}}';
   document.head.appendChild(fxStyle);
   const fxDefs={
    glow:[['color','Glow color','color','#9b83ff'],['spread','Spread','number',8,0,100,1],['opacity','Opacity','number',100,0,100,1]],
@@ -227,12 +227,13 @@ function legacy(id,root){if(id==='activity'){mountActivityTracker(root);return;}
      const field=document.createElement('div');field.className='ec-fx-field';
      const lab=document.createElement('label');lab.textContent=name;
      const row=document.createElement('div');row.className='ec-fx-control';
-     const input=document.createElement('input');input.type=type==='color'?'color':'number';
-     if(type==='color'){input.value=val||def}else{input.min=min;input.max=max;input.step=step;input.value=Number(val)}
-     input.addEventListener('focus',()=>pushHistory());
-     input.addEventListener(type==='color'?'input':'change',()=>ecFxSet(fx.id,p,type==='number'?Number(input.value):input.value));
+     const input=document.createElement('input');input.type=type==='color'?'color':'range';
+     let valueReadout=null;
+     if(type==='color'){input.value=val||def}else{input.min=min;input.max=max;input.step=step;input.value=Number(val);valueReadout=document.createElement('output');valueReadout.className='ec-fx-value';valueReadout.textContent=String(Number(val))}
+     input.addEventListener('pointerdown',()=>pushHistory(),{once:true});
+     input.addEventListener(type==='color'?'input':'input',()=>{const value=type==='number'?Number(input.value):input.value;if(valueReadout)valueReadout.textContent=String(value);ecFxSet(fx.id,p,value)});
      const kf=document.createElement('button');kf.type='button';kf.className='ec-fx-kf'+(animated?' active':'');kf.textContent='◇ KF';kf.title='Animate '+name;kf.onclick=()=>ecFxToggle(fx.id,p,def);
-     row.append(input,kf);field.append(lab,row);grid.append(field);
+     row.append(input);if(valueReadout)row.append(valueReadout);row.append(kf);field.append(lab,row);grid.append(field);
     });
     card.append(grid);
    });
