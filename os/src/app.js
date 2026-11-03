@@ -185,7 +185,7 @@ function legacy(id,root){if(id==='activity'){mountActivityTracker(root);return;}
 (function(){
  try{
   const fxStyle=document.createElement('style');
-  fxStyle.textContent='.ec-fx-settings{box-sizing:border-box;display:grid!important;grid-template-columns:minmax(0,1fr)!important;gap:16px;margin:12px 0 4px;padding:14px 10px 8px;border-top:1px solid #46516a;width:100%;min-width:0;max-width:100%;flex:0 0 100%;grid-column:1/-1;align-self:stretch}.fx-control{box-sizing:border-box;display:flex;flex-wrap:wrap;align-items:center;min-width:0}.ec-fx-field{box-sizing:border-box;display:block!important;min-width:0;width:100%;}.ec-fx-field label{display:block;font-size:11px;line-height:1.35;color:#c5cee0;margin:0 0 7px;font-weight:650;overflow-wrap:anywhere}.ec-fx-control{box-sizing:border-box;display:flex;gap:8px;align-items:center;width:100%;min-width:0}.ec-fx-control input[type=range]{appearance:auto;-webkit-appearance: auto;display:block;flex:1 1 70px;width:100%;min-width:50px;height:22px;padding:0;margin:0;accent-color:#9c83ff;background:transparent;border:0}.ec-fx-control input[type=color]{box-sizing:border-box;flex:1;min-width:35px;height:32px;padding:2px;background:#151a26;border:1px solid #46516a;border-radius:7px}.ec-fx-value{flex:0 0 42px;text-align:right;color:#e8eafa;font-size:10px;font-variant-numeric:tabular-nums}.ec-fx-kf{flex:none;border:1px solid #7160a5;background:#30284d;color:#d1c3ff;border-radius:7px;padding:7px 9px;font-size:10px;white-space:nowrap}.ec-fx-kf.active{background:#59488d;color:white}@media(max-width:520px){.ec-fx-settings{grid-template-columns:minmax(0,1fr);gap:10px;padding:12px 8px}.ec-fx-control input[type=range]{min-width:70px}}';
+  fxStyle.textContent='.ec-fx-stack{box-sizing:border-box;width:100%;display:flex;flex-direction:column;gap:12px;padding:12px 0 18px;min-width:0}.ec-fx-stack-heading{font-size:10px;font-weight:800;letter-spacing:1.2px;color:#9daac4;padding:2px 2px 4px}.ec-fx-card{box-sizing:border-box;width:100%;min-width:0;padding:12px;background:rgba(20,25,39,.94);border:1px solid #3c4861;border-radius:12px;display:flex;flex-direction:column;gap:13px;overflow:hidden}.ec-fx-card-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding-bottom:10px;border-bottom:1px solid #39445b;min-width:0}.ec-fx-name{font-size:13px;font-weight:750;color:#f1f4ff;min-width:0;overflow-wrap:anywhere}.ec-fx-actions{display:flex;align-items:center;gap:5px;flex:none}.ec-fx-move-label{font-size:10px;color:#9daac4;margin-right:1px}.ec-fx-move,.ec-fx-toggle,.ec-fx-kf{box-sizing:border-box;border:1px solid #53617d;background:#252e43;color:#e5eaff;border-radius:7px;min-height:28px;padding:4px 8px;font-size:11px;font-weight:700}.ec-fx-move:disabled{opacity:.3}.ec-fx-toggle{min-width:42px;background:#422e35;border-color:#78505a;color:#ffc5ce}.ec-fx-toggle.active{background:#203e37;border-color:#3c806c;color:#aaf1d7}.ec-fx-field{box-sizing:border-box;display:flex;flex-direction:column;gap:7px;width:100%;min-width:0}.ec-fx-field label{display:block;color:#cbd4e7;font-size:11px;font-weight:650;line-height:1.35;margin:0}.ec-fx-control{box-sizing:border-box;display:flex;align-items:center;gap:9px;width:100%;min-width:0}.ec-fx-control input[type=range]{appearance:none;-webkit-appearance:none;box-sizing:border-box;display:block;flex:1 1 auto;width:100%;min-width:0;height:22px;margin:0;padding:0;background:transparent;border:0;accent-color:#a58bff;cursor:pointer}.ec-fx-control input[type=range]::-webkit-slider-runnable-track{height:5px;border-radius:99px;background:#48536b}.ec-fx-control input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:15px;height:15px;margin-top:-5px;border-radius:50%;background:#b7a2ff;border:2px solid #f3efff;box-shadow:0 0 0 3px rgba(167,139,250,.18)}.ec-fx-control input[type=range]::-moz-range-track{height:5px;border-radius:99px;background:#48536b}.ec-fx-control input[type=range]::-moz-range-thumb{width:12px;height:12px;border-radius:50%;background:#b7a2ff;border:2px solid #f3efff}.ec-fx-control input[type=color]{box-sizing:border-box;flex:1;min-width:0;height:32px;padding:2px;background:#151a26;border:1px solid #46516a;border-radius:7px}.ec-fx-value{flex:0 0 42px;text-align:right;color:#e8eafa;font-size:10px;font-variant-numeric:tabular-nums}.ec-fx-kf{flex:none;border-color:#7160a5;background:#30284d;color:#d1c3ff;white-space:nowrap}.ec-fx-kf.active{background:#59488d;color:#fff}.ec-fx-empty{padding:14px;color:#9daac4;font-size:12px;border:1px dashed #46516a;border-radius:10px}@media(max-width:520px){.ec-fx-card{padding:11px 9px;gap:12px}.ec-fx-actions{gap:3px}.ec-fx-move,.ec-fx-toggle{padding:4px 6px}}';
   document.head.appendChild(fxStyle);
   const fxDefs={
    glow:[['color','Glow color','color','#9b83ff'],['spread','Spread','number',8,0,100,1],['opacity','Opacity','number',100,0,100,1]],
@@ -207,36 +207,45 @@ function legacy(id,root){if(id==='activity'){mountActivityTracker(root);return;}
   function ecAddFxSettings(){
    const l=activeLayer(),body=document.getElementById('inspectorBody');
    if(!l||!body||State.inspectorTab!=='effects')return;
-   const counts={};
-   (l.effects||[]).forEach(fx=>{
+   let panel=body.querySelector('.ec-fx-stack');
+   if(panel&&panel.dataset.layerId===String(l.id))return;
+   if(panel)panel.remove();
+   panel=document.createElement('div');panel.className='ec-fx-stack';panel.dataset.layerId=String(l.id);
+   const heading=document.createElement('div');heading.className='ec-fx-stack-heading';heading.textContent='EFFECT CONTROLS';panel.append(heading);
+   const effects=l.effects||[];
+   if(!effects.length){const empty=document.createElement('div');empty.className='ec-fx-empty';empty.textContent='Add an effect to see its controls.';panel.append(empty)}
+   const labels={oscillate:'Oscillate',autoshake:'Auto Shake',handheld:'Handheld Shake',impact:'Impact Shake',glow:'Glow',shadow:'Shadow',tint:'Tint',vignette:'Vignette',glitch:'Glitch',wave:'Wave',echo:'Echo'};
+   effects.forEach((fx,index)=>{
     const defs=fxDefs[fx.type]||[];if(!defs.length)return;
-    counts[fx.type]=(counts[fx.type]||0)+1;
-    const label=({oscillate:'Oscillate',autoshake:'Auto Shake',handheld:'Handheld Shake',impact:'Impact Shake',glow:'Glow',shadow:'Shadow',tint:'Tint',vignette:'Vignette',glitch:'Glitch',wave:'Wave',echo:'Echo'})[fx.type]||fx.type;
-    const title=label+' #'+counts[fx.type];
-    let card=null,best=Infinity;
-    body.querySelectorAll('div,section,article').forEach(node=>{
-     if(node.dataset.ecFxSettingsId===String(fx.id))card=node;
-     const txt=(node.textContent||'').trim();
-     if(txt.startsWith(title)&&txt.length<1800&&txt.length<best){card=node;best=txt.length}
-    });
-    if(!card||card.querySelector('.ec-fx-settings'))return;
-    card.dataset.ecFxSettingsId=String(fx.id);
-    const grid=document.createElement('div');grid.className='ec-fx-settings';
-    defs.forEach(([p,name,type,def,min,max,step])=>{
-     const val=ecFxValue(l,fx,p,def),key=ecFxKey(fx,p),animated=(l.keyframes&&l.keyframes[key]||[]).length>0;
+    const card=document.createElement('section');card.className='ec-fx-card';
+    const head=document.createElement('div');head.className='ec-fx-card-head';
+    const name=document.createElement('div');name.className='ec-fx-name';name.textContent=labels[fx.type]||fx.type;
+    const actions=document.createElement('div');actions.className='ec-fx-actions';
+    const up=document.createElement('button');up.type='button';up.className='ec-fx-move';up.textContent='↑';up.title='Move effect up';up.disabled=index===0;
+    up.onclick=()=>{const at=l.effects.indexOf(fx);if(at>0){l.effects.splice(at,1);l.effects.splice(at-1,0,fx);pushHistory();renderInspector();drawFrame()}};
+    const down=document.createElement('button');down.type='button';down.className='ec-fx-move';down.textContent='↓';down.title='Move effect down';down.disabled=index===effects.length-1;
+    down.onclick=()=>{const at=l.effects.indexOf(fx);if(at>=0&&at<l.effects.length-1){l.effects.splice(at,1);l.effects.splice(at+1,0,fx);pushHistory();renderInspector();drawFrame()}};
+    const moveLabel=document.createElement('span');moveLabel.className='ec-fx-move-label';moveLabel.textContent='Move';
+    const toggle=document.createElement('button');toggle.type='button';toggle.className='ec-fx-toggle'+(fx.enabled===false?'':' active');toggle.textContent=fx.enabled===false?'OFF':'ON';toggle.setAttribute('aria-pressed',String(fx.enabled!==false));
+    toggle.onclick=()=>{pushHistory();fx.enabled=fx.enabled===false?true:false;renderInspector();drawFrame()};
+    actions.append(moveLabel,up,down,toggle);head.append(name,actions);card.append(head);
+    defs.forEach(([p,label,type,def,min,max,step])=>{
      const field=document.createElement('div');field.className='ec-fx-field';
-     const lab=document.createElement('label');lab.textContent=name;
+     const lab=document.createElement('label');lab.textContent=label;field.append(lab);
      const row=document.createElement('div');row.className='ec-fx-control';
-     const input=document.createElement('input');input.type=type==='color'?'color':'range';
-     let valueReadout=null;
-     if(type==='color'){input.value=val||def}else{input.min=min;input.max=max;input.step=step;input.value=Number(val);valueReadout=document.createElement('output');valueReadout.className='ec-fx-value';valueReadout.textContent=String(Number(val))}
+     const input=document.createElement('input');input.type=type==='color'?'color':'range';input.className='ec-fx-slider';
+     let output=null;
+     if(type==='color'){input.value=ecFxValue(l,fx,p,def)||def}
+     else{input.min=min;input.max=max;input.step=step;input.value=Number(ecFxValue(l,fx,p,def));output=document.createElement('output');output.className='ec-fx-value';output.textContent=String(Number(input.value))}
      input.addEventListener('pointerdown',()=>pushHistory(),{once:true});
-     input.addEventListener(type==='color'?'input':'input',()=>{const value=type==='number'?Number(input.value):input.value;if(valueReadout)valueReadout.textContent=String(value);ecFxSet(fx.id,p,value)});
-     const kf=document.createElement('button');kf.type='button';kf.className='ec-fx-kf'+(animated?' active':'');kf.textContent='◇ KF';kf.title='Animate '+name;kf.onclick=()=>ecFxToggle(fx.id,p,def);
-     row.append(input);if(valueReadout)row.append(valueReadout);row.append(kf);field.append(lab,row);grid.append(field);
+     input.addEventListener('input',()=>{const value=type==='color'?input.value:Number(input.value);if(output)output.textContent=String(value);ecFxSet(fx.id,p,value)});
+     const key=ecFxKey(fx,p),animated=(l.keyframes&&l.keyframes[key]||[]).length>0;
+     const kf=document.createElement('button');kf.type='button';kf.className='ec-fx-kf'+(animated?' active':'');kf.textContent='◇ KF';kf.title='Animate '+label;kf.onclick=()=>ecFxToggle(fx.id,p,def);
+     row.append(input);if(output)row.append(output);row.append(kf);field.append(row);card.append(field);
     });
-    card.append(grid);
+    panel.append(card);
    });
+   body.append(panel);
   }
   const originalInspector=renderInspector;
   renderInspector=function(){originalInspector();ecAddFxSettings()};window.renderInspector=renderInspector;try{const ecBody=document.getElementById('inspectorBody');if(ecBody&&window.MutationObserver){new MutationObserver(()=>ecAddFxSettings()).observe(ecBody,{childList:true,subtree:true})}}catch(e){}
